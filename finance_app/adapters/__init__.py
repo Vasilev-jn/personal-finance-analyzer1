@@ -1,0 +1,4 @@
+"""
+Bank adapters.
+"""
+
