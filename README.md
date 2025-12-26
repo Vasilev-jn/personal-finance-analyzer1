@@ -31,7 +31,11 @@ python -m pytest
 ```
 
 ## Структура
-- `finance_app/` — домен, категории, правила, адаптеры, сервисы.
-- `finance_app/static/`, `templates/` — фронтенд.
-- `tests/` — pytest-покрытие основных модулей.
+- `app.py` — Flask-приложение: API для импорта, аналитики, auth, ML/LLM, сохранения состояния (демо-эндпоинт удалён).
+- `finance_app/domain.py` — модели `Operation`, `Account`, `Category`, `Vault`.
+- `finance_app/category_tree.py`, `category_mapping.py` — дерево категорий (`sys_*`, `base_*`), маппинг банк-категорий → базовые.
+- `finance_app/rules.py`, `services/categorization.py` — правила и пайплайн категоризации (правила → маппинг → ML/LLM → фолбэк).
+- `finance_app/services/analytics_service.py` — сводки, тренды, разбивки, быстрые ответы; `storage.py` — сохранение/загрузка состояния; `ml_model.py`, `llm_categorizer.py` — ML/LLM; `import_service.py` — импорт CSV.
+- `finance_app/adapters/` — парсеры CSV (Альфа, Тинькофф); `static/`, `templates/` — фронтенд (без кнопки демо).
+- `tests/` — pytest для утилит, категорий/маппинга, правил, пайплайна, ML/LLM, импорта, аналитики, сторейджа.
 - `docs/screenshots/` — изображения для README.
