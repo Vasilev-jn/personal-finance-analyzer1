@@ -39,3 +39,6 @@ python -m pytest
 - `finance_app/adapters/` — парсеры CSV (Альфа, Тинькофф); `static/`, `templates/` — фронтенд (без кнопки демо).
 - `tests/` — pytest для утилит, категорий/маппинга, правил, пайплайна, ML/LLM, импорта, аналитики, сторейджа.
 - `docs/screenshots/` — изображения для README.
+
+## Лицензия
+MIT, см. файл `LICENSE`.
