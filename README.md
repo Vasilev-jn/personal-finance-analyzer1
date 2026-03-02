@@ -1,44 +1,77 @@
-# MoneyMap — приватный анализ расходов
+# MoneyMap
 
-Локальное веб-приложение (Flask + Chart.js), которое импортирует CSV-выписки из банков (Альфа, Тинькофф), автоматически категоризирует операции и показывает аналитику. Все данные и модель остаются на вашей машине.
+MoneyMap is a privacy-first Flask application for local expense analysis. It imports bank CSV statements, categorizes transactions with rules plus optional ML/LLM helpers, and serves analytics in a local web UI.
 
-## Возможности
-- Импорт CSV через адаптеры `finance_app/adapters/*`, создание счетов и операций в `Vault`.
-- Категоризация: правила (`rules.py`), маппинг банк-категорий (`category_mapping.py`), ML-стаб/модель (`ml_model.py`), LLM-стаб (`llm_categorizer.py`), пайплайн `services/categorization.py`.
-- Аналитика и быстрые ответы: сводка, тренды, разбивки по категориям, мерчанты, экспресс-ответы (`services/analytics_service.py`).
-- UI: `templates/index.html`, `static/app.js`, `static/style.css`. Демо-загрузка отключена ради приватности — загружайте только свои файлы.
+## Privacy-First Approach
 
-## Установка и запуск
+- The app is designed to run on your machine.
+- Uploaded CSV files, saved state, and the local auth password stay in local storage.
+- LLM-based categorization is optional and only becomes active when API credentials are provided through environment variables.
+
+## What Is Implemented Now
+
+- CSV import for Alfa and Tinkoff statements
+- Domain model for accounts, operations, categories, and the in-memory `Vault`
+- Categorization pipeline with rules, bank-category mapping, ML model, optional LLM client, and fallback logic
+- Analytics endpoints for totals, category breakdowns, merchant breakdowns, trends, quick answers, and operations history
+- Local password-based access control for the UI
+- State persistence and model save/load helpers
+- Pytest coverage for categorization, analytics, import, storage, utilities, and service behavior
+
+## Architecture
+
+- `app.py` - Flask entrypoint and HTTP API routes
+- `finance_app/domain.py` - core entities such as `Operation`, `Account`, and `Vault`
+- `finance_app/adapters/` - CSV parsers for supported banks
+- `finance_app/services/import_service.py` - import pipeline into the domain model
+- `finance_app/services/categorization.py` - categorization orchestration
+- `finance_app/services/analytics_service.py` - analytics and quick-answer logic
+- `finance_app/services/storage.py` - local state and password persistence
+- `finance_app/services/ml_model.py` - lightweight ML categorizer
+- `finance_app/services/llm_categorizer.py` - optional OpenAI-compatible categorizer client
+- `finance_app/templates/` and `finance_app/static/` - local UI
+- `tests/` - automated tests
+
+## How To Run Locally
+
 ```bash
-python -m pip install -r requirements.txt
-python app.py  # поднимет http://localhost:5000
+git clone https://github.com/Vasilev-jn/personal-finance-analyzer1.git
+cd personal-finance-analyzer1
+python -m venv .venv
+.venv\Scripts\activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+python app.py
 ```
 
-## Использование
-1) При первом запуске задайте пароль (хранится локально в `data/auth.json`).
-2) Выберите банк и загрузите CSV с операциями.
-3) Смотрите аналитику, историю и ИИ-ответы. Данные не покидают устройство.
+The Flask app starts on `http://localhost:5000`.
 
-## Скриншоты
-![Главная и быстрые ответы](docs/screenshots/main.png)
-![Аналитика](docs/screenshots/analitics.png)
-![История операций](docs/screenshots/history.png)
-![Профиль и настройки](docs/screenshots/profile.png)
+Optional environment variables for LLM categorization:
 
-## Тесты
+- `LLM_API_KEY` or `OPENAI_API_KEY`
+- `LLM_MODEL` or `OPENAI_MODEL`
+- `LLM_API_URL` or `OPENAI_BASE_URL`
+
+## Tests
+
 ```bash
-python -m pytest
+pytest
 ```
 
-## Структура
-- `app.py` — Flask-приложение: API для импорта, аналитики, auth, ML/LLM, сохранения состояния (демо-эндпоинт удалён).
-- `finance_app/domain.py` — модели `Operation`, `Account`, `Category`, `Vault`.
-- `finance_app/category_tree.py`, `category_mapping.py` — дерево категорий (`sys_*`, `base_*`), маппинг банк-категорий → базовые.
-- `finance_app/rules.py`, `services/categorization.py` — правила и пайплайн категоризации (правила → маппинг → ML/LLM → фолбэк).
-- `finance_app/services/analytics_service.py` — сводки, тренды, разбивки, быстрые ответы; `storage.py` — сохранение/загрузка состояния; `ml_model.py`, `llm_categorizer.py` — ML/LLM; `import_service.py` — импорт CSV.
-- `finance_app/adapters/` — парсеры CSV (Альфа, Тинькофф); `static/`, `templates/` — фронтенд (без кнопки демо).
-- `tests/` — pytest для утилит, категорий/маппинга, правил, пайплайна, ML/LLM, импорта, аналитики, сторейджа.
-- `docs/screenshots/` — изображения для README.
+## Screenshots
 
-## Лицензия
-MIT, см. файл `LICENSE`.
+![Main view and quick answers](docs/screenshots/main.png)
+![Analytics](docs/screenshots/analitics.png)
+![Operations history](docs/screenshots/history.png)
+![Profile and settings](docs/screenshots/profile.png)
+
+## Planned Improvements
+
+- add export options for filtered analytics
+- improve bank adapter coverage for more statement formats
+- separate Flask routes into smaller modules if the API grows
+- add more scenario-based tests for import edge cases
+
+## License
+
+MIT. See `LICENSE`.
