@@ -127,3 +127,46 @@ def test_merchant_breakdown_and_quick_answers(make_operation):
     )
     assert answers["balance"]["expense"] == 470.0
     assert answers["top_expense_category"]["id"]
+
+
+def test_subscription_candidates_detect_regular_expenses(make_operation):
+    vault = Vault()
+    for idx, dt in enumerate([date(2025, 1, 5), date(2025, 2, 5), date(2025, 3, 5)], start=1):
+        vault.add_operation(
+            make_operation(
+                op_id=f"netflix-{idx}",
+                dt=dt,
+                amount=Decimal("-399"),
+                description="Netflix monthly",
+                merchant="Netflix",
+                category_id="base_entertainment_online_video",
+            )
+        )
+    vault.add_operation(
+        make_operation(
+            op_id="random-cafe",
+            dt=date(2025, 3, 7),
+            amount=Decimal("-750"),
+            description="Cafe",
+            merchant="Cafe",
+            category_id="base_food_restaurants",
+        )
+    )
+    for idx, dt in enumerate([date(2025, 1, 8), date(2025, 2, 8), date(2025, 3, 8)], start=1):
+        vault.add_operation(
+            make_operation(
+                op_id=f"fuel-{idx}",
+                dt=dt,
+                amount=Decimal("-3000"),
+                description="Fuel regular",
+                merchant="AZS 50412",
+                category_id="base_transport_fuel",
+            )
+        )
+
+    subscriptions = analytics_service.subscription_candidates(vault)
+
+    assert len(subscriptions) == 1
+    assert subscriptions[0]["key"] == "netflix"
+    assert subscriptions[0]["operations_count"] == 3
+    assert subscriptions[0]["amount"] == 399.0

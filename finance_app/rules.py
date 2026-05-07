@@ -26,8 +26,25 @@ def apply_rules(operation: Operation, features: Features) -> Optional[RuleResult
         return "base_shopping_marketplace", "rule: marketplace merchant"
     mcc = features.mcc or ""
 
+    if "cashback" in feature_text or "cash back" in feature_text:
+        return "base_income_cashback", "rule: cashback"
+
     if "кэшбэк" in feature_text:
         return "base_income_cashback", "rule: cashback"
+
+    if operation.type == OperationType.EXPENSE and (mcc == "8398" or "donatty" in feature_text):
+        return "base_donations", "rule: donation merchant"
+
+    if operation.type == OperationType.EXPENSE and (
+        "копирка" in feature_text or "копицентр" in feature_text
+    ):
+        return "base_shopping_stationery", "rule: copy center"
+
+    if operation.type == OperationType.EXPENSE and "подписка pro" in feature_text:
+        return "base_home_services", "rule: bank subscription"
+
+    if operation.type == OperationType.EXPENSE and ("сберчаевые" in feature_text or "чаевые" in feature_text):
+        return "base_food_restaurants", "rule: tips"
 
     if operation.type == OperationType.INCOME and any(
         key in feature_text for key in ("зарплата", "salary", "премия")

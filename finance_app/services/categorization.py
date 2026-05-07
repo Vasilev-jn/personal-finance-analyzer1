@@ -1,5 +1,5 @@
 from collections import Counter
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from finance_app import rules
 from finance_app import category_mapping
@@ -16,11 +16,14 @@ class CategorizationPipeline:
         unknown_tracker: Optional[Dict[str, int]] = None,
         ml_model: Optional[SimpleMLModel] = None,
         llm_categorizer: Optional[LLMCategorizer] = None,
+        custom_mappings: Optional[List[dict]] = None,
     ):
         self.unknown_tracker = unknown_tracker if unknown_tracker is not None else {}
         self.unmapped_counter: Counter[Tuple[str, str]] = Counter()
         self.ml_model = ml_model
         self.llm_categorizer = llm_categorizer
+        self.custom_mappings: Dict[Tuple[str, str], str] = {}
+        self.replace_custom_mappings(custom_mappings or [])
 
     def categorize(self, operation: Operation) -> Optional[str]:
         features = build_features(operation)
@@ -29,6 +32,12 @@ class CategorizationPipeline:
         if rule_result:
             operation.category_id, operation.categorization_source = rule_result[0], rule_result[1]
             return operation.category_id
+
+        custom_mapped = self._lookup_custom_mapping(operation.bank, features.bank_category_norm)
+        if custom_mapped:
+            operation.category_id = custom_mapped
+            operation.categorization_source = "mapping_custom"
+            return custom_mapped
 
         mapped = category_mapping.lookup_base_category_norm(operation.bank, features.bank_category_norm)
         if mapped:
@@ -107,11 +116,15 @@ class CategorizationPipeline:
             "yandex go": "base_transport_taxi",
             "yandex.taxi": "base_transport_taxi",
             "uber": "base_transport_taxi",
+            "scooters": "base_transport_scooter",
             "aero": "base_travel_flights",
             "airlines": "base_travel_flights",
             "rjd": "base_travel_trains",
             "cinema": "base_entertainment_cinema",
             "кин": "base_entertainment_cinema",
+            "funpay": "base_entertainment_digital",
+            "anonchat": "base_entertainment_digital",
+            "beeline": "base_home_internet",
             "apteka": "base_shopping_pharmacy",
             "аптека": "base_shopping_pharmacy",
         }
@@ -139,6 +152,40 @@ class CategorizationPipeline:
             items.append({"bank": bank, "bank_category": cat, "count": cnt})
         return items
 
+    def set_custom_mapping(self, bank: str, bank_category: str, base_id: str) -> dict:
+        bank_norm = normalize_text(bank)
+        bank_category_norm = normalize_text(bank_category)
+        key = (bank_norm, bank_category_norm)
+        self.custom_mappings[key] = base_id
+        return {"bank": bank_norm, "bank_category": bank_category_norm, "base_id": base_id}
+
+    def replace_custom_mappings(self, items: List[dict]) -> None:
+        self.custom_mappings = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            bank = item.get("bank")
+            bank_category = item.get("bank_category")
+            base_id = item.get("base_id")
+            if not bank or not bank_category or not base_id:
+                continue
+            self.set_custom_mapping(str(bank), str(bank_category), str(base_id))
+
+    def list_custom_mappings(self) -> List[dict]:
+        result: List[dict] = []
+        for (bank, bank_category), base_id in sorted(self.custom_mappings.items()):
+            result.append({"bank": bank, "bank_category": bank_category, "base_id": base_id})
+        return result
+
+    def _lookup_custom_mapping(self, bank: str, bank_category_norm: str) -> Optional[str]:
+        if not bank_category_norm:
+            return None
+        bank_norm = normalize_text(bank)
+        exact = self.custom_mappings.get((bank_norm, bank_category_norm))
+        if exact:
+            return exact
+        return self.custom_mappings.get(("*", bank_category_norm))
+
     def _ml_model_predict(self, operation: Operation) -> Optional[str]:
         if not self.ml_model or not self.ml_model.is_ready():
             return None
@@ -155,12 +202,15 @@ def categorize_vault(vault, pipeline: CategorizationPipeline) -> None:
         pipeline.categorize(op)
 
 
-def reclassify_unknown(vault, pipeline: CategorizationPipeline) -> None:
+def reclassify_unknown(vault, pipeline: CategorizationPipeline) -> int:
     """
     Переклассифицировать только операции с category_id == None или base_unknown.
     Используется после обучения ML или обновления маппинга.
     """
+    updated = 0
     for op in vault.operations:
         if op.category_id is None or op.category_id == "base_unknown":
             op.category_id = None
             pipeline.categorize(op)
+            updated += 1
+    return updated

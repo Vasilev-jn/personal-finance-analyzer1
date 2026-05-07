@@ -62,5 +62,31 @@ class Vault:
             )
         return account_id
 
-    def add_operation(self, operation: Operation) -> None:
+    @staticmethod
+    def _operation_fingerprint(operation: Operation) -> tuple:
+        def norm_text(value: Optional[str]) -> str:
+            return " ".join((value or "").strip().lower().split())
+
+        amount = format(operation.amount.normalize(), "f")
+        return (
+            operation.bank.strip().lower(),
+            operation.account_id.strip().lower(),
+            operation.date.isoformat(),
+            amount,
+            operation.currency.strip().upper(),
+            operation.type.value,
+            norm_text(operation.description),
+            norm_text(operation.merchant),
+            norm_text(operation.mcc),
+            norm_text(operation.bank_category),
+        )
+
+    def add_operation(self, operation: Operation) -> bool:
+        fingerprint = self._operation_fingerprint(operation)
+        for existing in self.operations:
+            if existing.source_file_id == operation.source_file_id:
+                continue
+            if self._operation_fingerprint(existing) == fingerprint:
+                return False
         self.operations.append(operation)
+        return True

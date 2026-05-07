@@ -109,3 +109,18 @@ def test_fallback_stub_when_nothing_matches(make_operation):
     category = pipeline.categorize(op)
     assert category == "base_unknown"
     assert op.categorization_source == "fallback_stub"
+
+
+def test_custom_mapping_precedence_over_default_mapping(make_operation):
+    op = make_operation(
+        op_id="custom-map-1",
+        description="Custom map",
+        bank="alfa",
+        bank_category="products",
+    )
+    pipeline = CategorizationPipeline(
+        custom_mappings=[{"bank": "alfa", "bank_category": "products", "base_id": "base_shopping_marketplace"}]
+    )
+    category = pipeline.categorize(op)
+    assert category == "base_shopping_marketplace"
+    assert op.categorization_source == "mapping_custom"

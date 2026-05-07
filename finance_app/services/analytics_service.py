@@ -1,4 +1,4 @@
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple
@@ -6,6 +6,37 @@ from typing import Dict, List, Optional, Tuple
 from finance_app.category_tree import CATEGORY_INDEX, SERVICE_BASE_IDS, TRAVEL_BASE_IDS, find_parent_sys
 from finance_app.domain import Operation, OperationType, Vault
 from finance_app.utils import normalize_text
+
+
+SUBSCRIPTION_BASE_IDS = {
+    "base_entertainment_games",
+    "base_entertainment_online_video",
+    "base_entertainment_music",
+    "base_entertainment_digital",
+    "base_home_internet",
+    "base_home_services",
+    "base_health_fitness",
+}
+
+SUBSCRIPTION_TEXT_MARKERS = (
+    "подпис",
+    "subscription",
+    "subscribe",
+    "premium",
+    "pro",
+    "plus",
+    "яндекс плюс",
+    "yandex plus",
+    "icloud",
+    "netflix",
+    "kinopoisk",
+    "кинопоиск",
+    "okko",
+    "ivi",
+    "wink",
+    "spotify",
+    "youtube",
+)
 
 
 def _select_ops(vault: Vault, operations: Optional[List[Operation]] = None) -> List[Operation]:
@@ -111,6 +142,112 @@ def service_operations(vault: Vault, operations: Optional[List[Operation]] = Non
             value = op.amount if op.type == OperationType.INCOME else abs(op.amount) * -1
             totals[op.category_id] += value
     return {cid: float(amount) for cid, amount in totals.items()}
+
+
+def operation_subscription_key(op: Operation) -> str:
+    source = normalize_text(op.merchant) or normalize_text(op.description)
+    if not source:
+        return ""
+    return " ".join(part for part in source.split() if not part.isdigit())[:80]
+
+
+def subscription_candidates(
+    vault: Vault,
+    operations: Optional[List[Operation]] = None,
+    limit: int = 20,
+) -> List[Dict[str, object]]:
+    ops = [
+        op
+        for op in _select_ops(vault, operations)
+        if op.type == OperationType.EXPENSE
+        and op.category_id not in SERVICE_BASE_IDS
+        and _looks_like_subscription_operation(op)
+    ]
+    groups: Dict[str, List[Operation]] = defaultdict(list)
+    for op in ops:
+        key = operation_subscription_key(op)
+        if key:
+            groups[key].append(op)
+
+    results: List[Dict[str, object]] = []
+    for key, items in groups.items():
+        unique_dates = sorted({op.date for op in items})
+        if len(unique_dates) < 2:
+            continue
+
+        amounts = [float(abs(op.amount)) for op in items]
+        if not amounts:
+            continue
+        rounded_amounts = [round(amount) for amount in amounts]
+        common_amount, common_count = Counter(rounded_amounts).most_common(1)[0]
+        amount_stability = common_count / len(amounts)
+        avg_amount = sum(amounts) / len(amounts)
+        spread = (max(amounts) - min(amounts)) / avg_amount if avg_amount else 0
+        amount_stable = amount_stability >= 0.6 or spread <= 0.2
+
+        intervals = [(right - left).days for left, right in zip(unique_dates, unique_dates[1:])]
+        median_interval = _median(intervals)
+        interval_regular = (
+            median_interval is not None
+            and (6 <= median_interval <= 8 or 20 <= median_interval <= 45 or 85 <= median_interval <= 100)
+        )
+        if not (amount_stable and (interval_regular or len(items) >= 3)):
+            continue
+
+        monthly_amount = float(common_amount if common_count > 1 else avg_amount)
+        if median_interval and 6 <= median_interval <= 8:
+            monthly_amount *= 4.33
+        elif median_interval and 85 <= median_interval <= 100:
+            monthly_amount /= 3
+
+        last_date = max(unique_dates)
+        next_date = None
+        if median_interval:
+            next_date = date.fromordinal(last_date.toordinal() + int(round(median_interval)))
+        category_id = Counter(op.category_id for op in items if op.category_id).most_common(1)
+        category_id = category_id[0][0] if category_id else None
+        category = CATEGORY_INDEX.get(category_id)
+        last_op = max(items, key=lambda op: op.date)
+        label = _subscription_label(items[0], key)
+        results.append(
+            {
+                "key": key,
+                "name": label,
+                "amount": monthly_amount,
+                "last_amount": float(abs(last_op.amount)),
+                "operations_count": len(items),
+                "first_date": min(unique_dates).isoformat(),
+                "last_date": last_date.isoformat(),
+                "next_estimated_date": next_date.isoformat() if next_date else None,
+                "median_interval_days": median_interval,
+                "category_id": category_id,
+                "category_name": category.name if category else None,
+            }
+        )
+
+    results.sort(key=lambda item: (float(item["amount"]), item["operations_count"]), reverse=True)
+    return results[:limit]
+
+
+def _subscription_label(op: Operation, key: str) -> str:
+    return (op.merchant or op.description or key).strip() or key
+
+
+def _looks_like_subscription_operation(op: Operation) -> bool:
+    if op.category_id in SUBSCRIPTION_BASE_IDS:
+        return True
+    text = normalize_text(" ".join(part for part in (op.description, op.merchant, op.bank_category) if part))
+    return any(marker in text for marker in SUBSCRIPTION_TEXT_MARKERS)
+
+
+def _median(values: List[int]) -> Optional[float]:
+    if not values:
+        return None
+    sorted_values = sorted(values)
+    mid = len(sorted_values) // 2
+    if len(sorted_values) % 2:
+        return float(sorted_values[mid])
+    return (sorted_values[mid - 1] + sorted_values[mid]) / 2
 
 
 def monthly_trend(vault: Vault, operations: Optional[List[Operation]] = None) -> List[Dict[str, object]]:

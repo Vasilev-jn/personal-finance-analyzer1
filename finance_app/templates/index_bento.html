@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MoneyMap</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=1">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script>
+    (function () {
+      var savedTheme = localStorage.getItem("moneymap_theme") || "light";
+      document.documentElement.dataset.theme = savedTheme;
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/style_bento.css?v=1">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <div id="auth-screen" class="auth-screen">
+    <div class="auth-card">
+      <div class="auth-brand">
+        <span class="brand-mark">M</span>
+        <span>MoneyMap</span>
+      </div>
+      <h2 id="auth-title">Вход</h2>
+      <p id="auth-subtitle" class="hint"></p>
+      <form id="auth-login-form" class="auth-form hidden" autocomplete="off">
+        <label class="field">
+          <span>Пароль</span>
+          <input
+            type="password"
+            id="auth-password"
+            name="auth-password"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="none"
+            spellcheck="false"
+            inputmode="text"
+            required
+          >
+        </label>
+        <button type="submit" class="btn primary full">Войти</button>
+        <p id="auth-error" class="hint error" hidden></p>
+      </form>
+      <form id="auth-create-form" class="auth-form hidden" autocomplete="off">
+        <label class="field">
+          <span>Придумайте пароль</span>
+          <input
+            type="password"
+            id="auth-new-password"
+            name="auth-new-password"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="none"
+            spellcheck="false"
+            inputmode="text"
+            required
+          >
+        </label>
+        <button type="submit" class="btn primary full">Создать пароль</button>
+        <p id="auth-create-error" class="hint error" hidden></p>
+      </form>
+    </div>
+  </div>
+
+  <div class="page">
+    <header class="app-header">
+      <a class="brand-lockup" href="/" aria-label="MoneyMap">
+        <span class="brand-mark">M</span>
+        <span class="brand-text">
+          <strong>MoneyMap</strong>
+          <small>Personal finance vault</small>
+        </span>
+      </a>
+
+      <nav class="top-nav" aria-label="Разделы">
+        <button class="nav-btn active" data-target="main-section">Главная</button>
+        <button class="nav-btn" data-target="analytics-section">Аналитика</button>
+        <button class="nav-btn" data-target="history-section">История</button>
+        <button class="nav-btn" data-target="profile-section">Профиль</button>
+      </nav>
+
+      <div class="header-actions">
+        <button id="theme-toggle" class="btn icon-btn" type="button" aria-pressed="false">
+          <span id="theme-icon" aria-hidden="true">☾</span>
+          <span id="theme-label">Тёмная</span>
+        </button>
+      </div>
+    </header>
+
+    <main class="main">
+      <section class="section" id="main-section">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Локально · Приватно · Flask</p>
+            <h1>Финансовая панель</h1>
+          </div>
+          <p class="heading-note">Импорт операций, категории, история и быстрые выводы по личным финансам.</p>
+        </div>
+
+        <section class="bento-grid dashboard-grid">
+          <div class="card overview-card span-8">
+            <div class="card-header">
+              <div>
+                <p>Сводка</p>
+                <span class="hint">Без учёта переводов</span>
+              </div>
+              <span class="status-pill">Данные локально</span>
+            </div>
+            <div class="metric-grid">
+              <div class="metric income-metric">
+                <span>Доходы</span>
+                <strong id="income">-</strong>
+              </div>
+              <div class="metric expense-metric">
+                <span>Расходы</span>
+                <strong id="expense">-</strong>
+              </div>
+              <div class="metric net-metric">
+                <span>Итог</span>
+                <strong id="net">-</strong>
+              </div>
+              <div class="metric">
+                <span>Без категории</span>
+                <strong id="unknown">-</strong>
+              </div>
+            </div>
+          </div>
+
+          <div class="card upload-card span-4">
+            <div class="card-header">
+              <div>
+                <p>Импорт</p>
+                <span class="hint">Файл с операциями</span>
+              </div>
+            </div>
+            <form id="upload-form" class="upload-form">
+              <div class="field bank-field">
+                <span>Банк</span>
+                <select id="bank" class="native-select-hidden" required tabindex="-1" aria-hidden="true">
+                  <option value="alfa">Альфа</option>
+                  <option value="tinkoff">Тинькофф</option>
+                  <option value="sber">Сбер</option>
+                  <option value="vtb">ВТБ</option>
+                </select>
+                <span class="custom-select" data-select-for="bank">
+                  <button id="bank-select-trigger" class="custom-select-trigger" type="button" aria-haspopup="listbox" aria-expanded="false">
+                    <span id="bank-select-label">Альфа</span>
+                    <span class="custom-select-caret" aria-hidden="true"></span>
+                  </button>
+                  <span id="bank-select-menu" class="custom-select-menu" role="listbox" hidden>
+                    <button class="custom-select-option active" type="button" role="option" data-value="alfa" aria-selected="true">Альфа</button>
+                    <button class="custom-select-option" type="button" role="option" data-value="tinkoff" aria-selected="false">Тинькофф</button>
+                    <button class="custom-select-option" type="button" role="option" data-value="sber" aria-selected="false">Сбер</button>
+                    <button class="custom-select-option" type="button" role="option" data-value="vtb" aria-selected="false">ВТБ</button>
+                  </span>
+                </span>
+              </div>
+              <label class="field file-field">
+                <span>Файл с операциями</span>
+                <span class="file-picker">
+                  <input id="file" class="file-input" type="file" accept=".csv,.xlsx,.pdf" required>
+                  <span class="file-picker-btn">Выбрать файл</span>
+                  <span id="file-name" class="file-picker-name">Файл не выбран</span>
+                </span>
+                <span class="field-note">Поддерживаемые форматы: CSV, Excel, PDF</span>
+              </label>
+              <button type="submit" class="btn primary">Импортировать</button>
+            </form>
+            <div id="toast" class="toast" hidden></div>
+          </div>
+
+          <div class="dashboard-side span-6">
+            <div class="card goals-card">
+              <div class="card-header">
+                <p>Цели</p>
+                <span class="hint">Из профиля</span>
+              </div>
+              <p id="home-goals-text" class="summary-text muted">Цели пока не заданы</p>
+            </div>
+
+            <div class="card summary-card">
+              <div class="card-header">
+                <p>Быстрые ответы</p>
+                <span class="hint">Топ-3 расходов и доходов</span>
+              </div>
+              <div class="summary-qa">
+                <div>
+                  <p class="summary-title">Топ 3 трат</p>
+                  <ul id="home-qa-expenses" class="summary-list"></ul>
+                </div>
+                <div>
+                  <p class="summary-title">Топ 3 доходов</p>
+                  <ul id="home-qa-incomes" class="summary-list"></ul>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card chart transfer-card span-6">
+            <div class="card-header">
+              <div>
+                <p>Переводы</p>
+                <span id="main-transfer-subtitle" class="hint">Движение денег</span>
+              </div>
+              <button id="main-transfer-back" class="btn ghost small" hidden>Назад</button>
+            </div>
+            <div class="main-transfer-frame">
+              <canvas id="mainTransferChart"></canvas>
+            </div>
+            <div id="mainTransferLegend" class="legend"></div>
+          </div>
+
+          <div class="card table-card span-12">
+            <div class="card-header">
+              <p>Последние операции</p>
+              <span class="hint">За последнюю неделю</span>
+            </div>
+            <div class="table-wrapper compact">
+              <table class="compact-table">
+                <thead>
+                  <tr>
+                    <th>Дата</th>
+                    <th>Банк</th>
+                    <th>Описание</th>
+                    <th>Категория</th>
+                    <th>Сумма</th>
+                  </tr>
+                </thead>
+                <tbody id="home-recent-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="section hidden" id="analytics-section">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Динамика · Категории · Периоды</p>
+            <h1>Аналитика</h1>
+          </div>
+        </div>
+
+        <div class="analytics-layout">
+          <div class="analytics-card">
+            <button class="nav-btn active" data-analytics-target="expense-view">Расходы</button>
+            <div class="filter-block">
+              <label>Период</label>
+              <div class="inputs-row">
+                <input type="date" id="analytics-start-expense">
+                <input type="date" id="analytics-end-expense">
+              </div>
+              <div class="segmented">
+                <button class="seg-btn" data-analytics-quick="week" data-analytics-tab="expense">Неделя</button>
+                <button class="seg-btn" data-analytics-quick="month" data-analytics-tab="expense">Месяц</button>
+                <button class="seg-btn" data-analytics-quick="year" data-analytics-tab="expense">Год</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="analytics-card">
+            <button class="nav-btn" data-analytics-target="income-view">Доходы</button>
+            <div class="filter-block">
+              <label>Период</label>
+              <div class="inputs-row">
+                <input type="date" id="analytics-start-income">
+                <input type="date" id="analytics-end-income">
+              </div>
+              <div class="segmented">
+                <button class="seg-btn" data-analytics-quick="week" data-analytics-tab="income">Неделя</button>
+                <button class="seg-btn" data-analytics-quick="month" data-analytics-tab="income">Месяц</button>
+                <button class="seg-btn" data-analytics-quick="year" data-analytics-tab="income">Год</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="analytics-card">
+            <button class="nav-btn" data-analytics-target="transfers-view">Переводы</button>
+            <div class="filter-block">
+              <label>Период</label>
+              <div class="inputs-row">
+                <input type="date" id="analytics-start-transfers">
+                <input type="date" id="analytics-end-transfers">
+              </div>
+              <div class="segmented">
+                <button class="seg-btn" data-analytics-quick="week" data-analytics-tab="transfers">Неделя</button>
+                <button class="seg-btn" data-analytics-quick="month" data-analytics-tab="transfers">Месяц</button>
+                <button class="seg-btn" data-analytics-quick="year" data-analytics-tab="transfers">Год</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="analytics-card">
+            <button class="nav-btn" data-analytics-target="subscriptions-view">Подписки</button>
+            <div class="filter-block">
+              <label>Период</label>
+              <div class="inputs-row">
+                <input type="date" id="analytics-start-subscriptions">
+                <input type="date" id="analytics-end-subscriptions">
+              </div>
+              <div class="segmented">
+                <button class="seg-btn" data-analytics-quick="week" data-analytics-tab="subscriptions">Неделя</button>
+                <button class="seg-btn" data-analytics-quick="month" data-analytics-tab="subscriptions">Месяц</button>
+                <button class="seg-btn" data-analytics-quick="year" data-analytics-tab="subscriptions">Год</button>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <section class="analytics-content">
+          <div class="analytics-view" id="expense-view">
+            <div class="bento-grid">
+              <div class="card chart span-7">
+                <div class="card-header">
+                  <div>
+                    <p id="exp-chart-title">Расходы по категориям</p>
+                    <span id="exp-chart-subtitle" class="hint">Доли трат по base_* категориям</span>
+                  </div>
+                  <button id="exp-chart-back" class="btn ghost small" hidden>Назад</button>
+                </div>
+                <canvas id="expChart" height="300"></canvas>
+                <div id="expLegend" class="legend"></div>
+              </div>
+
+              <div class="card chart span-5 expense-top-card">
+                <div class="card-header">
+                  <div>
+                    <p>ТОП категорий по расходам</p>
+                    <span class="hint">Суммы без переводов</span>
+                  </div>
+                  <div class="segmented compact-segmented">
+                    <button class="seg-btn active" id="exp-top-5">ТОП-5</button>
+                    <button class="seg-btn" id="exp-top-10">ТОП-10</button>
+                  </div>
+                </div>
+                <div class="expense-top-chart-frame">
+                  <canvas id="expTopCategoriesChart"></canvas>
+                </div>
+                <div class="card-actions">
+                  <button id="exp-top-reset" class="btn ghost small">Сбросить фильтр</button>
+                </div>
+              </div>
+
+              <div class="card chart span-6">
+                <div class="card-header">
+                  <div>
+                    <p>Динамика расходов</p>
+                    <span class="hint">Недели и месяцы</span>
+                  </div>
+                  <div class="segmented compact-segmented">
+                    <button class="seg-btn active" id="exp-dyn-month">Месяц</button>
+                    <button class="seg-btn" id="exp-dyn-week">Неделя</button>
+                  </div>
+                </div>
+                <canvas id="expDynamicsChart" height="240"></canvas>
+              </div>
+
+              <div class="card chart span-6">
+                <div class="card-header">
+                  <div>
+                    <p>Накопленные расходы</p>
+                    <span class="hint">Рост трат внутри периода</span>
+                  </div>
+                </div>
+                <canvas id="expCumulativeChart" height="240"></canvas>
+              </div>
+
+            </div>
+          </div>
+
+          <div class="analytics-view hidden" id="income-view">
+            <div class="bento-grid">
+              <div class="card chart span-6">
+                <div class="card-header">
+                  <div>
+                    <p id="inc-chart-title">Доходы по категориям</p>
+                    <span id="inc-chart-subtitle" class="hint">Доли доходов по base_* категориям</span>
+                  </div>
+                  <button id="inc-chart-back" class="btn ghost small" hidden>Назад</button>
+                </div>
+                <canvas id="incChart" height="280"></canvas>
+                <div id="incLegend" class="legend"></div>
+              </div>
+
+              <div class="card chart span-6">
+                <div class="card-header">
+                  <div>
+                    <p>Источники дохода</p>
+                    <span class="hint">Категории поступлений</span>
+                  </div>
+                </div>
+                <canvas id="incSourcesChart" height="280"></canvas>
+              </div>
+
+              <div class="card chart span-6">
+                <div class="card-header">
+                  <div>
+                    <p>Доходы по месяцам</p>
+                    <span class="hint">Динамика поступлений</span>
+                  </div>
+                </div>
+                <canvas id="incTimelineChart" height="240"></canvas>
+              </div>
+
+              <div class="card chart span-6">
+                <div class="card-header">
+                  <div>
+                    <p>Результат по месяцам</p>
+                    <span class="hint">Доходы минус расходы</span>
+                  </div>
+                </div>
+                <canvas id="incNetChart" height="240"></canvas>
+              </div>
+
+            </div>
+          </div>
+
+          <div class="analytics-view hidden" id="transfers-view">
+            <div class="bento-grid">
+              <div class="card chart span-6">
+                <div class="card-header">
+                  <div>
+                    <p id="transfer-chart-title">Типы переводов</p>
+                    <span id="transfer-chart-subtitle" class="hint">Исходящие, входящие, между своими счетами</span>
+                  </div>
+                  <button id="transfer-chart-back" class="btn ghost small" hidden>Назад</button>
+                </div>
+                <canvas id="transferChart" height="240"></canvas>
+                <div id="transferLegend" class="legend"></div>
+              </div>
+
+              <div class="card chart span-6">
+                <div class="card-header">
+                  <div>
+                    <p>Переводы</p>
+                    <span class="hint">Список категорий</span>
+                  </div>
+                </div>
+                <ul id="transfer-list" class="pill-list"></ul>
+              </div>
+
+            </div>
+          </div>
+
+          <div class="analytics-view hidden" id="subscriptions-view">
+            <div class="bento-grid">
+              <div class="card chart span-5">
+                <div class="card-header">
+                  <div>
+                    <p>Подписки</p>
+                    <span class="hint">Регулярные списания по компаниям</span>
+                  </div>
+                </div>
+                <ul id="subscription-list" class="subscription-list"></ul>
+              </div>
+
+              <div class="card table-card span-7">
+                <div class="card-header">
+                  <div>
+                    <p id="subscription-detail-title">Операции по подписке</p>
+                    <span id="subscription-detail-subtitle" class="hint">Выберите компанию слева</span>
+                  </div>
+                </div>
+                <div class="table-wrapper compact">
+                  <table class="compact-table">
+                    <thead>
+                      <tr>
+                        <th>Дата</th>
+                        <th>Банк</th>
+                        <th>Описание</th>
+                        <th>Категория</th>
+                        <th>Сумма</th>
+                      </tr>
+                    </thead>
+                    <tbody id="subscription-ops-body"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </section>
+      </section>
+
+      <section class="section hidden" id="history-section">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Операции · Категории · Правки</p>
+            <h1>История</h1>
+          </div>
+        </div>
+
+        <div class="filter-bar">
+          <div class="filter-group">
+            <label>Период</label>
+            <input type="date" id="hist-start">
+            <input type="date" id="hist-end">
+            <div class="segmented compact-segmented">
+              <button class="seg-btn" data-quick="week">Неделя</button>
+              <button class="seg-btn active" data-quick="month">Месяц</button>
+              <button class="seg-btn" data-quick="year">Год</button>
+            </div>
+          </div>
+          <div class="filter-group">
+            <label>Тип</label>
+            <select id="hist-type">
+              <option value="all">Все</option>
+              <option value="expense">Расходы</option>
+              <option value="income">Доходы</option>
+            </select>
+          </div>
+          <label class="check-field">
+            <input type="checkbox" id="hist-exclude-transfers">
+            <span>Исключить переводы</span>
+          </label>
+          <button id="hist-apply" class="btn primary small">Показать</button>
+        </div>
+
+        <section class="bento-grid">
+          <div class="card table-card span-12">
+            <div class="card-header">
+              <p>Операции</p>
+              <span class="hint">Кнопка в строке меняет категорию</span>
+            </div>
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Дата</th>
+                    <th>Банк</th>
+                    <th>Описание</th>
+                    <th>Категория</th>
+                    <th>Сумма</th>
+                  </tr>
+                </thead>
+                <tbody id="ops-body"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card span-6">
+            <div class="card-header">
+              <div>
+                <p>Unknown и mapping</p>
+                <span class="hint">Ручная привязка bank_category</span>
+              </div>
+              <button id="hist-load-unknown" class="btn ghost small">Обновить unknown</button>
+            </div>
+            <div class="profile-row">
+              <div class="profile-field">
+                <label>Банк</label>
+                <input id="map-bank" type="text" placeholder="alfa или tinkoff">
+              </div>
+              <div class="profile-field">
+                <label>bank_category</label>
+                <input id="map-bank-category" type="text" placeholder="как в выписке">
+              </div>
+              <div class="profile-field">
+                <label>base_* категория</label>
+                <select id="map-base-id">
+                  <option value="">Выберите категорию</option>
+                </select>
+              </div>
+            </div>
+            <div class="profile-actions">
+              <button id="map-apply" class="btn primary small">Добавить mapping</button>
+              <button id="corr-undo" class="btn ghost small">Откатить правку</button>
+            </div>
+            <div class="table-wrapper compact">
+              <table class="compact-table">
+                <thead>
+                  <tr>
+                    <th>Дата</th>
+                    <th>Банк</th>
+                    <th>Описание</th>
+                    <th>bank_category</th>
+                    <th>Сумма</th>
+                  </tr>
+                </thead>
+                <tbody id="unknown-body"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card span-6">
+            <div class="card-header">
+              <div>
+                <p>Журнал правок</p>
+                <span class="hint">История изменений категорий</span>
+              </div>
+              <div class="header-actions">
+                <span id="corr-count" class="hint">0 записей</span>
+                <button id="corr-refresh" class="btn ghost small">Обновить</button>
+              </div>
+            </div>
+            <div class="table-wrapper compact">
+              <table class="compact-table">
+                <thead>
+                  <tr>
+                    <th>Время</th>
+                    <th>Операция</th>
+                    <th>Было</th>
+                    <th>Стало</th>
+                    <th>Источник</th>
+                    <th>Причина</th>
+                  </tr>
+                </thead>
+                <tbody id="corrections-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="section hidden" id="profile-section">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Профиль · Данные · ИИ</p>
+            <h1>Профиль</h1>
+          </div>
+        </div>
+
+        <div class="bento-grid">
+          <div class="card span-6">
+            <h4>О пользователе</h4>
+            <div class="profile-field">
+              <label>Имя/ник</label>
+              <input id="profile-name" type="text" placeholder="Ваше имя">
+            </div>
+            <div class="profile-row">
+              <div class="profile-field">
+                <label>Валюта</label>
+                <select id="profile-currency">
+                  <option value="RUB">RUB</option>
+                  <option value="USD">USD</option>
+                  <option value="EUR">EUR</option>
+                </select>
+              </div>
+              <div class="profile-field">
+                <label>Язык</label>
+                <select id="profile-language">
+                  <option value="ru">Русский</option>
+                  <option value="en">English</option>
+                </select>
+              </div>
+              <div class="profile-field">
+                <label>Часовой пояс</label>
+                <select id="profile-timezone">
+                  <option value="MSK (UTC+3)">MSK (UTC+3)</option>
+                  <option value="UTC">UTC</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="card span-6">
+            <h4>Финансовый профиль</h4>
+            <div class="profile-row">
+              <div class="profile-field">
+                <label>Доход/мес</label>
+                <input id="profile-income" type="number" placeholder="Напр. 120000">
+              </div>
+              <div class="profile-field">
+                <label>День зарплаты</label>
+                <input id="profile-payday" type="number" min="1" max="31" placeholder="10">
+              </div>
+              <div class="profile-field">
+                <label>Режим</label>
+                <select id="profile-mode">
+                  <option value="Коплю">Коплю</option>
+                  <option value="От зарплаты до зарплаты">От зарплаты до зарплаты</option>
+                  <option value="Инвестирую">Инвестирую</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="card span-6">
+            <h4>Работа ИИ-агента</h4>
+            <div class="profile-field">
+              <label>Название цели</label>
+              <input id="profile-goal-title" type="text" placeholder="Напр. Подушка безопасности">
+            </div>
+            <div class="profile-row">
+              <div class="profile-field">
+                <label>Сумма цели</label>
+                <input id="profile-goal-amount" type="number" min="0" placeholder="100000">
+              </div>
+              <div class="profile-field">
+                <label>Уже накоплено</label>
+                <input id="profile-goal-saved" type="number" min="0" placeholder="0">
+              </div>
+              <div class="profile-field">
+                <label>Срок до</label>
+                <input id="profile-goal-deadline" type="date">
+              </div>
+            </div>
+            <div class="profile-field">
+              <label>Заметки к цели</label>
+              <textarea id="agent-goals" rows="4" maxlength="5000" placeholder="Напр. снизить еду вне дома до 20 000 ₽/мес, не трогать резерв"></textarea>
+            </div>
+            <div class="profile-row">
+              <div class="profile-field">
+                <label>Приоритет</label>
+                <select id="profile-priority">
+                  <option value="Снизить расходы">Снизить расходы</option>
+                  <option value="Увеличить остаток">Увеличить остаток</option>
+                  <option value="Накопить подушку">Накопить подушку</option>
+                </select>
+              </div>
+              <div class="profile-field">
+                <label>Стиль общения</label>
+                <select id="profile-tone">
+                  <option value="Мягкий">Мягкий</option>
+                  <option value="Прямой">Прямой</option>
+                  <option value="Жёсткий коуч">Жёсткий коуч</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="card span-6 security-card">
+            <h4>Безопасность и данные</h4>
+            <div class="security-panel">
+              <div>
+                <p class="security-title">Пароль приложения</p>
+                <p class="security-copy">Один пароль защищает вход, текущую сессию и локальное хранилище.</p>
+              </div>
+              <div class="security-metrics">
+                <span class="pill">Сессия: активна</span>
+                <span class="pill">Хранилище: локально</span>
+                <span class="pill">Операций: <span id="profile-ops-count">-</span></span>
+              </div>
+            </div>
+            <div class="security-actions">
+              <button id="account-lock-now" class="btn ghost small" type="button">Заблокировать сейчас</button>
+              <button id="account-logout" class="btn ghost small" type="button">Выйти</button>
+              <button id="account-change-password" class="btn primary small" type="button">Сменить пароль</button>
+              <button id="delete-all" class="btn danger small" type="button">Удалить данные</button>
+            </div>
+          </div>
+
+          <div class="card span-12">
+            <h4>Файлы и банки</h4>
+            <div class="profile-field">
+              <label>Загруженные файлы</label>
+              <select id="profile-file-select">
+                <option value="">Нет файлов</option>
+              </select>
+            </div>
+            <div class="profile-actions">
+              <button id="profile-file-delete" class="btn ghost small">Удалить выбранный</button>
+              <button id="profile-save-btn" class="btn primary small">Сохранить профиль</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div id="agent-widget">
+      <button id="agent-toggle" class="agent-button" type="button" aria-expanded="false">ИИ помощник</button>
+      <div id="agent-panel" class="agent-panel" hidden>
+        <div class="agent-header">
+          <div class="agent-title">
+            <span class="agent-avatar" aria-hidden="true">AI</span>
+            <div>
+              <strong>Финансовый агент</strong>
+              <span id="agent-status">Готов к вопросам</span>
+            </div>
+          </div>
+          <button id="agent-close" class="btn ghost small agent-close-btn" type="button">×</button>
+        </div>
+        <div id="agent-messages" class="agent-messages"></div>
+        <div class="agent-input">
+          <input id="agent-question" type="text" placeholder="Спроси про траты, цели, сценарии...">
+          <button id="agent-send" class="btn primary small">Спросить</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app_bento.js?v=1"></script>
+</body>
+</html>

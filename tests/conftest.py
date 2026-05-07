@@ -1,7 +1,13 @@
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
+import sys
 
 import pytest
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 from finance_app.category_tree import CATEGORY_INDEX
 from finance_app.domain import Account, Operation, OperationType, Vault

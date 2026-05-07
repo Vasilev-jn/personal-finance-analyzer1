@@ -1,76 +1,119 @@
-# MoneyMap
+# MoneyMap v2
 
-MoneyMap is a privacy-first Flask application for local expense analysis. It imports bank CSV statements, categorizes transactions with rules plus optional ML/LLM helpers, and serves analytics in a local web UI.
+MoneyMap is a privacy-first local web application for personal finance analysis. It imports bank statements, normalizes transactions, categorizes spending, displays analytics, and provides personal finance answers through an AI assistant.
 
-## Privacy-First Approach
+By default, user data stays on the local machine. Bank statements, local state, auth files, API tokens, and trained model files are excluded from the repository.
 
-- The app is designed to run on your machine.
-- Uploaded CSV files, saved state, and the local auth password stay in local storage.
-- LLM-based categorization is optional and only becomes active when API credentials are provided through environment variables.
+## Features
 
-## What Is Implemented Now
+- Import statements from Alfa Bank, T-Bank, Sber, and VTB.
+- Detect duplicate files by SHA-256 content hash, not by filename.
+- Skip duplicate operations when statement periods overlap.
+- Categorize transactions with rules, bank-category mappings, ML helpers, and optional LLM helpers.
+- Analyze expenses, income, transfers, subscriptions, history, and period trends.
+- Store a financial profile: income, payday, goal, deadline, priority, and communication tone.
+- Use a tiered AI assistant:
+  - factual dashboard-level answers are handled locally;
+  - analytical questions can use aggregated data plus an LLM.
+- Protect the local app with a password-based session.
 
-- CSV import for Alfa and Tinkoff statements
-- Domain model for accounts, operations, categories, and the in-memory `Vault`
-- Categorization pipeline with rules, bank-category mapping, ML model, optional LLM client, and fallback logic
-- Analytics endpoints for totals, category breakdowns, merchant breakdowns, trends, quick answers, and operations history
-- Local password-based access control for the UI
-- State persistence and model save/load helpers
-- Pytest coverage for categorization, analytics, import, storage, utilities, and service behavior
+## Stack
 
-## Architecture
+- Python 3.12
+- Flask
+- Chart.js
+- scikit-learn
+- openpyxl
+- pypdf
+- pytest
 
-- `app.py` - Flask entrypoint and HTTP API routes
-- `finance_app/domain.py` - core entities such as `Operation`, `Account`, and `Vault`
-- `finance_app/adapters/` - CSV parsers for supported banks
-- `finance_app/services/import_service.py` - import pipeline into the domain model
-- `finance_app/services/categorization.py` - categorization orchestration
-- `finance_app/services/analytics_service.py` - analytics and quick-answer logic
-- `finance_app/services/storage.py` - local state and password persistence
-- `finance_app/services/ml_model.py` - lightweight ML categorizer
-- `finance_app/services/llm_categorizer.py` - optional OpenAI-compatible categorizer client
-- `finance_app/templates/` and `finance_app/static/` - local UI
-- `tests/` - automated tests
+## Installation
 
-## How To Run Locally
-
-```bash
-git clone https://github.com/Vasilev-jn/personal-finance-analyzer1.git
-cd personal-finance-analyzer1
+```powershell
 python -m venv .venv
-.venv\Scripts\activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+## Run
+
+Recommended:
+
+```powershell
+python -m flask --app app run --host 127.0.0.1 --port 5059
+```
+
+Open:
+
+```text
+http://127.0.0.1:5059
+```
+
+Direct launch is also supported:
+
+```powershell
 python app.py
 ```
 
-The Flask app starts on `http://localhost:5000`.
+It uses the same local port, `5059`.
 
-Optional environment variables for LLM categorization:
+## LLM Configuration
 
-- `LLM_API_KEY` or `OPENAI_API_KEY`
-- `LLM_MODEL` or `OPENAI_MODEL`
-- `LLM_API_URL` or `OPENAI_BASE_URL`
+The assistant can work without an API key for local factual and fallback analytical answers. For LLM-backed answers, configure environment variables or keep a local ignored token file.
+
+Example:
+
+```text
+AGENT_LLM_API_KEY=
+AGENT_LLM_MODEL=llama-3.1-8b-instant
+AGENT_LLM_API_URL=https://api.groq.com/openai/v1/chat/completions
+```
+
+Local files matching `token_model_*.txt` are ignored by Git.
+
+## Private Data Policy
+
+The repository must not contain:
+
+- `operations/` bank statements
+- `data/` local state and auth files
+- `token_model_*.txt` API token files
+- `.env` files
+- local IDE settings
+- trained model files such as `models/*.pkl`
+
+Useful checks before publishing:
+
+```powershell
+git status --short
+git ls-files token_model_*.txt operations data
+```
 
 ## Tests
 
-```bash
-pytest
+```powershell
+python -m pytest -q
 ```
 
-## Screenshots
+## Project Structure
 
-![Main view and quick answers](docs/screenshots/main.png)
-![Analytics](docs/screenshots/analitics.png)
-![Operations history](docs/screenshots/history.png)
-![Profile and settings](docs/screenshots/profile.png)
+- `app.py` - Flask API and app entrypoint.
+- `finance_app/domain.py` - domain entities and duplicate operation protection.
+- `finance_app/adapters/` - bank statement parsers.
+- `finance_app/services/import_service.py` - import and categorization flow.
+- `finance_app/services/analytics_service.py` - dashboard and analytics calculations.
+- `finance_app/services/agent_service.py` - AI assistant logic.
+- `finance_app/services/storage.py` - local state persistence.
+- `finance_app/static/` and `finance_app/templates/` - frontend.
+- `tests/` - automated tests.
 
-## Planned Improvements
+## Dataset Dry Run
 
-- add export options for filtered analytics
-- improve bank adapter coverage for more statement formats
-- separate Flask routes into smaller modules if the API grows
-- add more scenario-based tests for import edge cases
+If you have a local ignored `operations/` folder, run:
+
+```powershell
+python scripts/check_operations_dataset.py
+```
 
 ## License
 

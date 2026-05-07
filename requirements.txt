@@ -3,3 +3,5 @@ scikit-learn==1.5.2
 joblib==1.5.3
 requests==2.32.3
 pytest==8.3.4
+openpyxl==3.1.5
+pypdf==6.8.0
