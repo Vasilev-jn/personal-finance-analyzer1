@@ -53,6 +53,89 @@ BUDGET_CALCULATION_MARKERS = (
     "безопасно тратить",
 )
 
+SMALLTALK_MARKERS = (
+    "привет",
+    "здравствуй",
+    "здравствуйте",
+    "добрый день",
+    "доброе утро",
+    "добрый вечер",
+    "хай",
+    "hello",
+    "hi",
+    "спасибо",
+    "благодарю",
+    "ок",
+    "понял",
+    "поняла",
+)
+
+FINANCE_MARKERS = (
+    "деньг",
+    "финанс",
+    "бюджет",
+    "банк",
+    "карт",
+    "операц",
+    "выписк",
+    "покуп",
+    "платеж",
+    "платёж",
+    "трата",
+    "трат",
+    "доход",
+    "расход",
+    "остат",
+    "баланс",
+    "перевод",
+    "подпис",
+    "зарплат",
+    "лимит",
+    "цель",
+    "накоп",
+    "сэконом",
+    "кэшбек",
+    "кэшбэк",
+    "категор",
+)
+
+REQUEST_MARKERS = (
+    "покажи",
+    "посчитай",
+    "расскажи",
+    "проанализ",
+    "анализ",
+    "дай",
+    "составь",
+    "объясни",
+    "оцени",
+    "найди",
+    "проверь",
+    "подскажи",
+    "сравни",
+    "предлож",
+    "помоги",
+)
+
+QUESTION_MARKERS = (
+    "что",
+    "где",
+    "когда",
+    "сколько",
+    "почему",
+    "зачем",
+    "как",
+    "какой",
+    "какая",
+    "какие",
+    "куда",
+    "откуда",
+    "можно ли",
+    "есть ли",
+    "хватит ли",
+    "стоит ли",
+)
+
 
 @dataclass
 class AgentResult:
@@ -113,6 +196,56 @@ def classify_question(question: str) -> str:
     return "factual" if detect_intent(question) == "factual" else "analytical"
 
 
+def is_smalltalk(question: str) -> bool:
+    q = _normalized_query(question)
+    if not q:
+        return False
+    if any(marker in q for marker in FINANCE_MARKERS + FACTUAL_MARKERS + ANALYTICAL_MARKERS):
+        return False
+    if len(q.split()) <= 4 and any(q == marker or q.startswith(f"{marker} ") for marker in SMALLTALK_MARKERS):
+        return True
+    return False
+
+
+def is_finance_related(question: str) -> bool:
+    q = question.lower()
+    return any(marker in q for marker in FINANCE_MARKERS + FACTUAL_MARKERS + ANALYTICAL_MARKERS)
+
+
+def looks_like_question_or_request(question: str) -> bool:
+    q = _normalized_query(question)
+    if not q:
+        return False
+    return (
+        "?" in question
+        or any(q.startswith(marker) or f" {marker} " in f" {q} " for marker in QUESTION_MARKERS)
+        or any(marker in q for marker in REQUEST_MARKERS)
+    )
+
+
+def conversation_answer(question: str) -> str:
+    if is_smalltalk(question):
+        q = _normalized_query(question)
+        if q.startswith("спасибо") or q.startswith("благодарю"):
+            return "Пожалуйста. Если нужен разбор, задай конкретный вопрос по расходам, доходам, переводам, подпискам или цели."
+        if q.startswith("ок") or q.startswith("понял") or q.startswith("поняла"):
+            return "Ок. Жду конкретный вопрос по твоим финансам."
+        return (
+            "Привет. Я отвечаю только на конкретные вопросы по твоим финансам: расходы, доходы, "
+            "переводы, подписки, цели и лимит до зарплаты.\n\n"
+            "Например: «Куда ушло больше всего денег?» или «Сколько можно тратить в день до зарплаты?»"
+        )
+    if not is_finance_related(question):
+        return (
+            "Я отвечаю только на вопросы по данным MoneyMap. Задай финансовый вопрос: про расходы, "
+            "доходы, переводы, подписки, категории, цель или лимит до зарплаты."
+        )
+    return (
+        "Уточни вопрос по финансам. Например: «Сколько я потратил на подписки?», "
+        "«Куда ушло больше всего денег?» или «Есть аномалии в расходах?»"
+    )
+
+
 def is_budget_calculation(question: str) -> bool:
     q = question.lower()
     if any(marker in q for marker in BUDGET_CALCULATION_MARKERS):
@@ -122,6 +255,8 @@ def is_budget_calculation(question: str) -> bool:
 
 def detect_intent(question: str) -> str:
     q = question.lower()
+    if is_smalltalk(question):
+        return "conversation"
     if is_budget_calculation(q):
         return "daily_limit"
     if any(marker in q for marker in ("подпис", "регулярн", "списан", "списыва")):
@@ -138,7 +273,9 @@ def detect_intent(question: str) -> str:
         return "factual"
     if any(marker in q for marker in ANALYTICAL_MARKERS):
         return "llm_analysis"
-    return "llm_analysis"
+    if is_finance_related(q) and looks_like_question_or_request(q):
+        return "llm_analysis"
+    return "conversation"
 
 
 def profile_insights(
@@ -568,6 +705,8 @@ def analytical_llm_answer(question: str, profile: dict, analytics: dict, llm_cli
 
 def answer_agent_question(question: str, profile: dict, analytics: dict, llm_client: AgentLLMClient) -> AgentResult:
     intent = detect_intent(question)
+    if intent == "conversation":
+        return AgentResult(answer=conversation_answer(question), tier="conversation", source="local")
     if intent == "factual":
         return AgentResult(answer=factual_answer(question, analytics), tier="factual", source="local")
 
@@ -668,6 +807,10 @@ def _date_or_none(value: object) -> Optional[date]:
         return datetime.strptime(str(value).strip(), "%Y-%m-%d").date()
     except Exception:
         return None
+
+
+def _normalized_query(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower().strip(".,!?:;\"'«»()[]{}")).strip()
 
 
 def _days_in_month(year: int, month: int) -> int:

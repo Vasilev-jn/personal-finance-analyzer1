@@ -8,6 +8,13 @@ const BANK_ICONS = {
   vtb:     `<img class="bank-icon" src="/static/bank_icons/vtb.png" alt="ВТБ">`,
 };
 
+const BANK_IMPORT_FORMATS = {
+  alfa: { label: "CSV", accept: ".csv", extensions: [".csv"] },
+  tinkoff: { label: "CSV", accept: ".csv", extensions: [".csv"] },
+  sber: { label: "Excel", accept: ".xls,.xlsx", extensions: [".xls", ".xlsx"] },
+  vtb: { label: "PDF", accept: ".pdf", extensions: [".pdf"] },
+};
+
 const state = {
   expense: { mode: "base", selected: null, baseData: [], merchantData: [], chart: null },
   income: { mode: "base", selected: null, baseData: [], merchantData: [], chart: null },
@@ -50,6 +57,7 @@ document.addEventListener("DOMContentLoaded", () => {
   setupFilePicker();
   setupCustomSelects();
   setupDetailPopup();
+  setupInstructionLightbox();
   setupAuth();
 });
 
@@ -70,8 +78,94 @@ function setupDetailPopup() {
     if (e.key === "Escape") {
       closeDetailPopup();
       closeConfirmPopup();
+      closeInstructionLightbox();
     }
   });
+}
+
+function setupInstructionLightbox() {
+  document.querySelectorAll(".instruction-gallery figure").forEach((figure) => {
+    const img = figure.querySelector("img");
+    if (!img) return;
+    const caption = figure.querySelector("figcaption")?.textContent?.trim() || img.alt || "Скриншот инструкции";
+    figure.classList.add("instruction-zoom-trigger");
+    figure.setAttribute("role", "button");
+    figure.setAttribute("tabindex", "0");
+    figure.setAttribute("aria-label", `Открыть скриншот: ${caption}`);
+  });
+
+  document.addEventListener("click", (e) => {
+    const figure = e.target.closest(".instruction-zoom-trigger");
+    if (!figure || figure.closest("#instruction-lightbox")) return;
+    const img = figure.querySelector("img");
+    if (!img) return;
+    showInstructionLightbox(img.currentSrc || img.src, figure.querySelector("figcaption")?.textContent || img.alt);
+  });
+
+  document.addEventListener("keydown", (e) => {
+    const figure = e.target.closest(".instruction-zoom-trigger");
+    if ((e.key === "Enter" || e.key === " ") && figure && !figure.closest("#instruction-lightbox")) {
+      e.preventDefault();
+      const img = figure.querySelector("img");
+      if (!img) return;
+      showInstructionLightbox(img.currentSrc || img.src, figure.querySelector("figcaption")?.textContent || img.alt);
+    }
+    if (e.key === "Escape") {
+      closeInstructionLightbox();
+    }
+  });
+}
+
+function ensureInstructionLightbox() {
+  let popup = document.getElementById("instruction-lightbox");
+  if (popup) return popup;
+  popup = document.createElement("div");
+  popup.id = "instruction-lightbox";
+  popup.className = "detail-popup instruction-lightbox";
+  popup.hidden = true;
+  popup.innerHTML = `
+    <div class="detail-backdrop" data-instruction-close></div>
+    <div class="instruction-lightbox-card" role="dialog" aria-modal="true" aria-labelledby="instruction-lightbox-title">
+      <div class="detail-header instruction-lightbox-header">
+        <strong id="instruction-lightbox-title"></strong>
+        <button class="btn ghost small" type="button" data-instruction-close>×</button>
+      </div>
+      <img id="instruction-lightbox-img" alt="">
+    </div>
+  `;
+  popup.addEventListener("click", (e) => {
+    if (e.target.closest("[data-instruction-close]")) {
+      closeInstructionLightbox();
+    }
+  });
+  document.body.appendChild(popup);
+  return popup;
+}
+
+function showInstructionLightbox(src, title) {
+  const popup = ensureInstructionLightbox();
+  const img = popup.querySelector("#instruction-lightbox-img");
+  const heading = popup.querySelector("#instruction-lightbox-title");
+  const safeTitle = (title || "Скриншот инструкции").trim();
+  heading.textContent = safeTitle;
+  img.src = src;
+  img.alt = safeTitle;
+  popup.hidden = false;
+  requestAnimationFrame(() => popup.classList.add("is-open"));
+  popup.querySelector("[data-instruction-close]")?.focus();
+}
+
+function closeInstructionLightbox() {
+  const popup = document.getElementById("instruction-lightbox");
+  if (!popup || popup.hidden) return;
+  popup.classList.remove("is-open");
+  window.setTimeout(() => {
+    if (!popup.classList.contains("is-open")) {
+      popup.hidden = true;
+      const img = popup.querySelector("#instruction-lightbox-img");
+      if (img) img.removeAttribute("src");
+    }
+  }, 180);
 }
 
 function ensureDetailPopup() {
@@ -397,16 +491,61 @@ function setupFilePicker() {
   const input = document.getElementById("file");
   const name = document.getElementById("file-name");
   const picker = input?.closest(".file-picker");
+  const bankSelect = document.getElementById("bank");
   if (!input || !name || !picker) return;
 
   const sync = () => {
     const fileName = input.files?.[0]?.name || "Файл не выбран";
     name.textContent = fileName;
     picker.classList.toggle("has-file", Boolean(input.files?.length));
+    if (input.files?.length) clearUploadError();
+  };
+
+  const syncBankFormat = () => {
+    const note = document.getElementById("bank-format-note");
+    const format = BANK_IMPORT_FORMATS[bankSelect?.value] || BANK_IMPORT_FORMATS.alfa;
+    input.accept = format.accept;
+    if (note) note.textContent = `Поддерживаемый формат: ${format.label}`;
+    if (input.files?.length) {
+      input.value = "";
+      sync();
+    }
+    clearUploadError();
   };
 
   input.addEventListener("change", sync);
+  bankSelect?.addEventListener("change", syncBankFormat);
+  syncBankFormat();
   sync();
+}
+
+function uploadFormatError(bank, fileName) {
+  const format = BANK_IMPORT_FORMATS[bank] || BANK_IMPORT_FORMATS.alfa;
+  const ext = fileExtension(fileName);
+  if (!ext || !format.extensions.includes(ext)) {
+    return `Неверный формат файла. Для выбранного банка нужен ${format.label}.`;
+  }
+  return "";
+}
+
+function fileExtension(fileName) {
+  const name = String(fileName || "").toLowerCase();
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 ? name.slice(dot) : "";
+}
+
+function showUploadError(message) {
+  const error = document.getElementById("upload-error");
+  if (!error) return;
+  error.textContent = message;
+  error.hidden = false;
+}
+
+function clearUploadError() {
+  const error = document.getElementById("upload-error");
+  if (!error) return;
+  error.textContent = "";
+  error.hidden = true;
 }
 
 function setupTheme() {
@@ -427,10 +566,13 @@ function applyTheme(theme) {
   localStorage.setItem("moneymap_theme", normalized);
   const toggle = document.getElementById("theme-toggle");
   const icon = document.getElementById("theme-icon");
-  const label = document.getElementById("theme-label");
-  if (toggle) toggle.setAttribute("aria-pressed", normalized === "dark" ? "true" : "false");
+  const nextLabel = normalized === "dark" ? "\u0421\u0432\u0435\u0442\u043b\u0430\u044f \u0442\u0435\u043c\u0430" : "\u0422\u0451\u043c\u043d\u0430\u044f \u0442\u0435\u043c\u0430";
+  if (toggle) {
+    toggle.setAttribute("aria-pressed", normalized === "dark" ? "true" : "false");
+    toggle.setAttribute("aria-label", nextLabel);
+    toggle.setAttribute("title", nextLabel);
+  }
   if (icon) icon.textContent = normalized === "dark" ? "\u2600" : "\u263e";
-  if (label) label.textContent = normalized === "dark" ? "\u0421\u0432\u0435\u0442\u043b\u0430\u044f" : "\u0422\u0451\u043c\u043d\u0430\u044f";
   if (window.Chart) {
     Chart.defaults.color = chartTextColor();
     Chart.defaults.borderColor = chartGridColor();
@@ -640,10 +782,18 @@ function startApp() {
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
+    clearUploadError();
     const bank = document.getElementById("bank").value;
     const fileInput = document.getElementById("file");
     if (!fileInput.files.length) {
-      return showToast("Выберите файл с операциями");
+      const message = "Выберите файл с операциями";
+      showUploadError(message);
+      return showToast(message);
+    }
+    const formatError = uploadFormatError(bank, fileInput.files[0].name);
+    if (formatError) {
+      showUploadError(formatError);
+      return showToast(formatError);
     }
     const data = new FormData();
     data.append("bank", bank);
@@ -653,11 +803,14 @@ function startApp() {
       const result = await response.json();
       fileInput.value = "";
       fileInput.dispatchEvent(new Event("change"));
+      clearUploadError();
       const duplicates = Number(result.import_report?.duplicates || 0);
       showToast(duplicates ? `Файл загружен, дублей пропущено: ${duplicates}` : "Файл успешно загружен");
       await refreshAfterDataMutation();
     } catch (err) {
-      showToast(err.message || "Не удалось импортировать файл");
+      const message = err.message || "Не удалось импортировать файл";
+      showUploadError(message);
+      showToast(message);
     }
   });
 
@@ -2261,6 +2414,8 @@ function setupAgent() {
   const messages = document.getElementById("agent-messages");
   const status = document.getElementById("agent-status");
 
+  toggle.title = "Открыть финансового агента";
+
   const setOpen = (open) => {
     toggle.setAttribute("aria-expanded", open ? "true" : "false");
     if (open) {
@@ -2466,6 +2621,8 @@ function setupAgent() {
       const sourceLabel =
         data.source === "llm"
           ? `LLM · ${data.model || "модель"}`
+          : data.tier === "conversation"
+            ? "Локально"
           : data.tier === "factual"
             ? "Локально · навигация"
             : "Локально · расчёт";

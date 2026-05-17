@@ -17,6 +17,16 @@ By default, user data stays on the local machine. Bank statements, local state, 
   - analytical questions can use aggregated data plus an LLM.
 - Protect the local app with a password-based session.
 
+## Screenshots
+
+### Main Dashboard
+
+![MoneyMap main dashboard](screens/main.png)
+
+### FAQ And Bank Export Instructions
+
+![MoneyMap FAQ and bank export instructions](screens/faq.png)
+
 ## Stack
 
 - Python 3.12

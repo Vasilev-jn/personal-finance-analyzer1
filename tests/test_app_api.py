@@ -232,6 +232,36 @@ def test_agent_expense_answer_excludes_transfers(client, make_operation):
     assert "Перевод" not in payload["answer"]
 
 
+def test_agent_greeting_does_not_trigger_financial_report_or_llm(client):
+    class FakeLLM:
+        model = "fake-model"
+
+        def __init__(self):
+            self.calls = 0
+
+        def is_ready(self):
+            return True
+
+        def complete(self, messages, max_tokens=900):
+            self.calls += 1
+            return "LLM financial report"
+
+    fake = FakeLLM()
+    app_module.agent_llm_client = fake
+
+    resp = client.post("/api/agent-answer", json={"question": "привет"})
+
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["tier"] == "conversation"
+    assert payload["source"] == "local"
+    assert payload["model"] is None
+    assert fake.calls == 0
+    assert "конкретные вопросы" in payload["answer"]
+    assert "Доходы:" not in payload["answer"]
+    assert "Расходы:" not in payload["answer"]
+
+
 def test_agent_transfer_answer_uses_separate_transfer_bucket(client, make_operation):
     app_module.vault.add_operation(
         make_operation(
@@ -583,6 +613,54 @@ def test_import_returns_report_with_skipped_rows(client):
     assert payload["imported"] == 1
     assert payload["import_report"]["rows_total"] == 3
     assert payload["import_report"]["skipped"] == 2
+
+
+def test_import_rejects_wrong_file_format_with_clear_message(client):
+    resp = client.post(
+        "/api/import",
+        data={"bank": "alfa", "file": (io.BytesIO(b"%PDF-1.4"), "statement.pdf")},
+        content_type="multipart/form-data",
+    )
+
+    assert resp.status_code == 400
+    payload = resp.get_json()
+    assert payload["error"] == "unsupported_file_format"
+    assert "CSV" in payload["message"]
+    assert len(app_module.uploaded_files) == 0
+    assert len(app_module.vault.operations) == 0
+
+
+def test_import_rejects_file_without_operations_with_clear_message(client):
+    empty_csv = "operationDate,accountName,accountNumber,type,amount,currency,comment,merchant,mcc,category\n".encode("utf-8")
+
+    resp = client.post(
+        "/api/import",
+        data={"bank": "alfa", "file": (io.BytesIO(empty_csv), "empty.csv")},
+        content_type="multipart/form-data",
+    )
+
+    assert resp.status_code == 400
+    payload = resp.get_json()
+    assert payload["error"] == "no_operations_found"
+    assert "не найдено операций" in payload["message"]
+    assert len(app_module.uploaded_files) == 0
+    assert len(app_module.vault.operations) == 0
+
+
+def test_import_rejects_corrupted_file_with_clear_message(client):
+    resp = client.post(
+        "/api/import",
+        data={"bank": "sber", "file": (io.BytesIO(b"not an xlsx file"), "broken.xlsx")},
+        content_type="multipart/form-data",
+    )
+
+    assert resp.status_code == 400
+    payload = resp.get_json()
+    assert payload["error"] == "file_parse_failed"
+    assert "Не удалось прочитать файл" in payload["message"]
+    assert "Excel" in payload["message"]
+    assert len(app_module.uploaded_files) == 0
+    assert len(app_module.vault.operations) == 0
 
 
 def test_import_rejects_same_file_content(client):

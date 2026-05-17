@@ -14,7 +14,7 @@
       document.documentElement.dataset.theme = savedTheme;
     })();
   </script>
-  <link rel="stylesheet" href="/static/style_bento.css?v=1">
+  <link rel="stylesheet" href="/static/style_bento.css?v=14">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
@@ -79,13 +79,13 @@
         <button class="nav-btn active" data-target="main-section">Главная</button>
         <button class="nav-btn" data-target="analytics-section">Аналитика</button>
         <button class="nav-btn" data-target="history-section">История</button>
-        <button class="nav-btn" data-target="profile-section">Профиль</button>
+        <button class="nav-btn" data-target="faq-section">FAQ</button>
       </nav>
 
       <div class="header-actions">
-        <button id="theme-toggle" class="btn icon-btn" type="button" aria-pressed="false">
+        <button class="nav-btn header-profile-btn" data-target="profile-section" type="button">Профиль</button>
+        <button id="theme-toggle" class="btn icon-btn" type="button" aria-pressed="false" aria-label="Тёмная тема" title="Тёмная тема">
           <span id="theme-icon" aria-hidden="true">☾</span>
-          <span id="theme-label">Тёмная</span>
         </button>
       </div>
     </header>
@@ -161,12 +161,13 @@
               <label class="field file-field">
                 <span>Файл с операциями</span>
                 <span class="file-picker">
-                  <input id="file" class="file-input" type="file" accept=".csv,.xlsx,.pdf" required>
+                  <input id="file" class="file-input" type="file" accept=".csv" required>
                   <span class="file-picker-btn">Выбрать файл</span>
                   <span id="file-name" class="file-picker-name">Файл не выбран</span>
                 </span>
-                <span class="field-note">Поддерживаемые форматы: CSV, Excel, PDF</span>
+                <span id="bank-format-note" class="field-note">Поддерживаемый формат: CSV</span>
               </label>
+              <div id="upload-error" class="upload-error" role="alert" hidden></div>
               <button type="submit" class="btn primary">Импортировать</button>
             </form>
             <div id="toast" class="toast" hidden></div>
@@ -616,6 +617,228 @@
         </section>
       </section>
 
+      <section class="section hidden" id="faq-section">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">FAQ · Импорт · Банки</p>
+            <h1>Частые вопросы</h1>
+          </div>
+          <p class="heading-note">Короткие ответы по загрузке выписок, категориям, хранению данных и работе финансового помощника.</p>
+        </div>
+
+        <section class="bento-grid">
+          <div class="card span-7">
+            <div class="card-header">
+              <div>
+                <p>Вопросы по приложению</p>
+                <span class="hint">Что важно знать перед импортом операций</span>
+              </div>
+            </div>
+            <div class="faq-list">
+              <details class="faq-item" open>
+                <summary>Какие файлы можно загружать сейчас?</summary>
+                <p>Стабильно проверены CSV-выписки Альфа-Банка и Т-Банка. Excel, PDF, Сбер и ВТБ показаны в интерфейсе как направление развития и подключаются отдельными парсерами.</p>
+              </details>
+              <details class="faq-item">
+                <summary>Почему переводы не попадают в основные расходы?</summary>
+                <p>Главная сводка считает доходы и расходы без внутренних переводов, чтобы не раздувать траты. Переводы вынесены в отдельный блок аналитики.</p>
+              </details>
+              <details class="faq-item">
+                <summary>Что означает «Без категории»?</summary>
+                <p>Это операции, для которых не нашлось правила или банковской категории. Их можно исправить вручную в истории, после чего правило будет учитываться дальше.</p>
+              </details>
+              <details class="faq-item">
+                <summary>Где хранятся мои данные?</summary>
+                <p>Данные приложения сохраняются локально в проекте и не отправляются во внешние сервисы без отдельного действия пользователя.</p>
+              </details>
+              <details class="faq-item">
+                <summary>Почему суммы могут отличаться от банка?</summary>
+                <p>Чаще всего причина в пересекающихся выписках за один период: без дедупликации одинаковые операции могут быть посчитаны повторно.</p>
+              </details>
+              <details class="faq-item">
+                <summary>Можно ли удалить загруженный файл?</summary>
+                <p>Да. Откройте «Профиль», выберите файл в блоке «Файлы и банки» и нажмите «Удалить выбранный». После удаления аналитика пересчитывается.</p>
+              </details>
+              <details class="faq-item">
+                <summary>Куда писать, если возникли вопросы или проблемы?</summary>
+                <p>Напишите на почту <a href="mailto:k.vasilev.dev@gmail.com">k.vasilev.dev@gmail.com</a>. Опишите, что произошло, какой банк и формат файла использовались.</p>
+              </details>
+            </div>
+          </div>
+
+          <div class="card span-5">
+            <div class="card-header">
+              <div>
+                <p>Как подготовить выписку</p>
+                <span class="hint">Общий чек-лист перед загрузкой</span>
+              </div>
+            </div>
+            <ul class="faq-checklist">
+              <li>Выберите нужную карту или счёт, а не общий рекламный экран банка.</li>
+              <li>Откройте историю операций или раздел выписок.</li>
+              <li>Задайте период, который не пересекается с уже загруженными файлами.</li>
+              <li>По возможности скачайте CSV: он лучше подходит для автоматического разбора.</li>
+              <li>После импорта проверьте блок «Без категории» и историю операций.</li>
+            </ul>
+          </div>
+
+          <div class="faq-bank-heading span-12">
+            <div>
+              <p>Инструкции по банкам</p>
+              <span class="hint">Пути выгрузки по скриншотам из папки instructions</span>
+            </div>
+          </div>
+
+          <details class="card span-12 bank-guide-card">
+            <summary class="bank-guide-summary">
+              <span class="bank-guide-title">
+                <img class="bank-guide-icon" src="/static/bank_icons/alfa.png" alt="">
+                <span>
+                  <span class="bank-guide-name">Альфа-Банк</span>
+                  <span class="hint">CSV-выписка · 3 шага на скриншотах</span>
+                </span>
+              </span>
+              <span class="bank-guide-chevron" aria-hidden="true"></span>
+            </summary>
+            <div class="bank-guide-body">
+              <ol>
+                <li>Откройте нужную карту или счёт.</li>
+                <li>Перейдите в историю операций.</li>
+                <li>Нажмите скачивание или экспорт выписки.</li>
+                <li>Выберите период и сохраните файл в CSV.</li>
+              </ol>
+              <div class="instruction-gallery">
+                <figure>
+                  <img src="/instructions/1_1_alfa_main.png" alt="Альфа-Банк: главный экран" loading="lazy">
+                  <figcaption>Главный экран</figcaption>
+                </figure>
+                <figure>
+                  <img src="/instructions/1_2_alfa_history.png" alt="Альфа-Банк: история операций" loading="lazy">
+                  <figcaption>История операций</figcaption>
+                </figure>
+                <figure>
+                  <img src="/instructions/1_3_alfa_download.png" alt="Альфа-Банк: скачивание выписки" loading="lazy">
+                  <figcaption>Скачивание</figcaption>
+                </figure>
+              </div>
+            </div>
+          </details>
+
+          <details class="card span-12 bank-guide-card">
+            <summary class="bank-guide-summary">
+              <span class="bank-guide-title">
+                <img class="bank-guide-icon" src="/static/bank_icons/tinkoff.png" alt="">
+                <span>
+                  <span class="bank-guide-name">Т-Банк</span>
+                  <span class="hint">CSV-выписка · 3 шага на скриншотах</span>
+                </span>
+              </span>
+              <span class="bank-guide-chevron" aria-hidden="true"></span>
+            </summary>
+            <div class="bank-guide-body">
+              <ol>
+                <li>Откройте карту на главном экране.</li>
+                <li>Перейдите в историю операций.</li>
+                <li>Откройте выгрузку или скачивание выписки.</li>
+                <li>Скачайте CSV за нужный период.</li>
+              </ol>
+              <div class="instruction-gallery">
+                <figure>
+                  <img src="/instructions/2_1_tbank_main.png" alt="Т-Банк: главный экран" loading="lazy">
+                  <figcaption>Главный экран</figcaption>
+                </figure>
+                <figure>
+                  <img src="/instructions/2_2_tbank_history.png" alt="Т-Банк: история операций" loading="lazy">
+                  <figcaption>История операций</figcaption>
+                </figure>
+                <figure>
+                  <img src="/instructions/2_3_tbank_download.png" alt="Т-Банк: скачивание выписки" loading="lazy">
+                  <figcaption>Скачивание</figcaption>
+                </figure>
+              </div>
+            </div>
+          </details>
+
+          <details class="card span-12 bank-guide-card">
+            <summary class="bank-guide-summary">
+              <span class="bank-guide-title">
+                <img class="bank-guide-icon" src="/static/bank_icons/sber.png" alt="">
+                <span>
+                  <span class="bank-guide-name">Сбер</span>
+                  <span class="hint">Выписка по карте · 5 шагов на скриншотах</span>
+                </span>
+              </span>
+              <span class="bank-guide-chevron" aria-hidden="true"></span>
+            </summary>
+            <div class="bank-guide-body">
+              <ol>
+                <li>Откройте карту и раздел расходов или истории.</li>
+                <li>Перейдите ко всем расходам.</li>
+                <li>Отфильтруйте операции по нужной карте.</li>
+                <li>Выберите даты и скачайте выписку.</li>
+              </ol>
+              <div class="instruction-gallery">
+                <figure>
+                  <img src="/instructions/3_1_sber_main_up.png" alt="Сбер: верх главного экрана" loading="lazy">
+                  <figcaption>Главный экран</figcaption>
+                </figure>
+                <figure>
+                  <img src="/instructions/3_2_sber_main_down.png" alt="Сбер: низ главного экрана" loading="lazy">
+                  <figcaption>Расходы</figcaption>
+                </figure>
+                <figure>
+                  <img src="/instructions/3_3_sber_allexpenses.png" alt="Сбер: все расходы" loading="lazy">
+                  <figcaption>Все расходы</figcaption>
+                </figure>
+                <figure>
+                  <img src="/instructions/3_4_sber_filter_by_card.png" alt="Сбер: фильтр по карте" loading="lazy">
+                  <figcaption>Фильтр по карте</figcaption>
+                </figure>
+                <figure>
+                  <img src="/instructions/3_5_sber_filterdate_and_download.png" alt="Сбер: период и скачивание" loading="lazy">
+                  <figcaption>Период и скачивание</figcaption>
+                </figure>
+              </div>
+            </div>
+          </details>
+
+          <details class="card span-12 bank-guide-card">
+            <summary class="bank-guide-summary">
+              <span class="bank-guide-title">
+                <img class="bank-guide-icon" src="/static/bank_icons/vtb.png" alt="">
+                <span>
+                  <span class="bank-guide-name">ВТБ</span>
+                  <span class="hint">Выписка по карте · 3 шага на скриншотах</span>
+                </span>
+              </span>
+              <span class="bank-guide-chevron" aria-hidden="true"></span>
+            </summary>
+            <div class="bank-guide-body">
+              <ol>
+                <li>Откройте нужную карту.</li>
+                <li>Перейдите в операции или выписку по карте.</li>
+                <li>Укажите период выгрузки.</li>
+                <li>Скачайте файл и загрузите его в MoneyMap после подключения парсера.</li>
+              </ol>
+              <div class="instruction-gallery">
+                <figure>
+                  <img src="/instructions/4_1_vtb_main.png" alt="ВТБ: главный экран" loading="lazy">
+                  <figcaption>Главный экран</figcaption>
+                </figure>
+                <figure>
+                  <img src="/instructions/4_2_vtb_card.png" alt="ВТБ: карта" loading="lazy">
+                  <figcaption>Карта</figcaption>
+                </figure>
+                <figure>
+                  <img src="/instructions/4_3_vtb_download.png" alt="ВТБ: скачивание выписки" loading="lazy">
+                  <figcaption>Скачивание</figcaption>
+                </figure>
+              </div>
+            </div>
+          </details>
+        </section>
+      </section>
+
       <section class="section hidden" id="profile-section">
         <div class="section-heading">
           <div>
@@ -783,6 +1006,6 @@
     </div>
   </div>
 
-  <script src="/static/app_bento.js?v=1"></script>
+  <script src="/static/app_bento.js?v=14"></script>
 </body>
 </html>

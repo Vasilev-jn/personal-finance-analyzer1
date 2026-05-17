@@ -6,7 +6,7 @@ import secrets
 import time
 from datetime import datetime, date
 
-from flask import Flask, Response, jsonify, redirect, render_template, request
+from flask import Flask, Response, abort, jsonify, redirect, render_template, request, send_from_directory
 
 from finance_app import category_mapping, rules
 from finance_app.category_tree import CATEGORY_INDEX, iter_leaf_categories
@@ -22,6 +22,13 @@ from finance_app.utils import build_features
 
 
 BASE_DIR = Path(__file__).parent
+INSTRUCTIONS_DIR = BASE_DIR / "instructions"
+IMPORT_FORMATS = {
+    "alfa": {"label": "CSV", "extensions": {".csv"}, "name": "Альфа"},
+    "tinkoff": {"label": "CSV", "extensions": {".csv"}, "name": "Т-Банк"},
+    "sber": {"label": "Excel", "extensions": {".xls", ".xlsx"}, "name": "Сбер"},
+    "vtb": {"label": "PDF", "extensions": {".pdf"}, "name": "ВТБ"},
+}
 
 app = Flask(
     __name__,
@@ -278,10 +285,29 @@ def file_sha256(path: str) -> str:
     return digest.hexdigest()
 
 
+def import_format_message(bank: str) -> str:
+    spec = IMPORT_FORMATS.get(bank) or {}
+    label = spec.get("label") or "поддерживаемый формат"
+    bank_name = spec.get("name") or bank
+    return f"Для банка {bank_name} загрузите файл в формате {label}."
+
+
+def cleanup_failed_import(file_id: str) -> None:
+    if not file_id:
+        return
+    vault.operations = [op for op in vault.operations if op.source_file_id != file_id]
+    rebuild_pipeline_counters()
+
+
 @app.before_request
 def require_auth():
     # allow static and auth endpoints
-    if request.path in {"/", "/legacy", "/favicon.ico"} or request.path.startswith("/static") or request.path.startswith("/api/auth"):
+    if (
+        request.path in {"/", "/legacy", "/favicon.ico"}
+        or request.path.startswith("/static")
+        or request.path.startswith("/instructions")
+        or request.path.startswith("/api/auth")
+    ):
         return None
     if not has_password():
         return None
@@ -303,6 +329,13 @@ def legacy_index():
 @app.route("/favicon.ico")
 def favicon():
     return app.send_static_file("favicon.svg")
+
+
+@app.route("/instructions/<path:filename>")
+def instruction_image(filename):
+    if Path(filename).suffix.lower() != ".png":
+        abort(404)
+    return send_from_directory(INSTRUCTIONS_DIR, filename)
 
 
 @app.route("/api/auth/status")
@@ -382,15 +415,31 @@ def api_auth_change_password():
 def api_import():
     uploaded = request.files.get("file")
     bank = (request.form.get("bank") or "").lower()
-    if not uploaded or bank not in {"alfa", "tinkoff", "sber", "vtb"}:
+    if not uploaded or bank not in IMPORT_FORMATS:
         return jsonify({"error": "Укажите файл и банк (alfa / tinkoff / sber / vtb)."}), 400
 
-    suffix = Path(uploaded.filename or "").suffix or ".csv"
+    filename = uploaded.filename or ""
+    suffix = Path(filename).suffix.lower()
+    format_spec = IMPORT_FORMATS[bank]
+    if suffix not in format_spec["extensions"]:
+        return (
+            jsonify(
+                {
+                    "error": "unsupported_file_format",
+                    "message": import_format_message(bank),
+                    "expected_format": format_spec["label"],
+                    "allowed_extensions": sorted(format_spec["extensions"]),
+                }
+            ),
+            400,
+        )
+
     tmp_path = ""
     with NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         uploaded.save(tmp.name)
         tmp_path = tmp.name
 
+    file_id = ""
     try:
         content_hash = file_sha256(tmp_path)
         duplicate_file = next((item for item in uploaded_files if item.get("content_hash") == content_hash), None)
@@ -411,21 +460,33 @@ def api_import():
             )
 
         file_id = storage.new_file_id()
-        if bank == "alfa":
-            count, import_report = import_service.import_alfa_file_into_vault(
-                vault, pipeline, tmp_path, file_id, include_report=True
-            )
-        elif bank == "tinkoff":
-            count, import_report = import_service.import_tinkoff_file_into_vault(
-                vault, pipeline, tmp_path, file_id, include_report=True
-            )
-        elif bank == "sber":
-            count, import_report = import_service.import_sber_file_into_vault(
-                vault, pipeline, tmp_path, file_id, include_report=True
-            )
-        else:
-            count, import_report = import_service.import_vtb_file_into_vault(
-                vault, pipeline, tmp_path, file_id, include_report=True
+        try:
+            if bank == "alfa":
+                count, import_report = import_service.import_alfa_file_into_vault(
+                    vault, pipeline, tmp_path, file_id, include_report=True
+                )
+            elif bank == "tinkoff":
+                count, import_report = import_service.import_tinkoff_file_into_vault(
+                    vault, pipeline, tmp_path, file_id, include_report=True
+                )
+            elif bank == "sber":
+                count, import_report = import_service.import_sber_file_into_vault(
+                    vault, pipeline, tmp_path, file_id, include_report=True
+                )
+            else:
+                count, import_report = import_service.import_vtb_file_into_vault(
+                    vault, pipeline, tmp_path, file_id, include_report=True
+                )
+        except Exception:
+            cleanup_failed_import(file_id)
+            return (
+                jsonify(
+                    {
+                        "error": "file_parse_failed",
+                        "message": f"Не удалось прочитать файл. {import_format_message(bank)} Проверьте, что выбрана правильная выписка из банка.",
+                    }
+                ),
+                400,
             )
         duplicates = int(import_report.get("duplicates", 0) or 0)
         if count == 0 and duplicates:
@@ -439,6 +500,18 @@ def api_import():
                     }
                 ),
                 409,
+            )
+        if count == 0:
+            cleanup_failed_import(file_id)
+            return (
+                jsonify(
+                    {
+                        "error": "no_operations_found",
+                        "message": f"В файле не найдено операций для импорта. {import_format_message(bank)} Проверьте период, банк и структуру выписки.",
+                        "import_report": import_report,
+                    }
+                ),
+                400,
             )
     finally:
         if tmp_path:
@@ -778,48 +851,6 @@ def api_save_model():
         return jsonify({"error": "model not trained"}), 400
     ml_model.save(MODEL_PATH)
     return jsonify({"status": "saved", "path": str(MODEL_PATH)})
-
-
-def build_simple_answer(question: str, analytics: dict) -> str:
-    q = question.lower()
-    totals = analytics.get("totals", {})
-    expenses = totals.get("expense", 0)
-    income = totals.get("income", 0)
-    net = totals.get("net", 0)
-
-    def top_cat(key: str):
-        items = analytics.get(key) or []
-        if not items:
-            return None
-        sorted_items = sorted(items, key=lambda x: abs(x["amount"]), reverse=True)
-        return sorted_items[0]
-
-    if any(x in q for x in ["куда", "больше всего", "трат", "категор"]):
-        top_exp = top_cat("by_base_expense")
-        if top_exp:
-            return f"Больше всего расходов — {top_exp['name']}: {abs(top_exp['amount']):,.0f} ₽ ({abs(top_exp['amount'])/expenses*100:.1f}% расходов)." if expenses else f"Больше всего расходов — {top_exp['name']}."
-        return "Не нашёл расходов по категориям."
-
-    if "доход" in q or "заработ" in q:
-        top_inc = top_cat("by_base_income")
-        if top_inc:
-            return f"Доходы: {income:,.0f} ₽. Основной источник — {top_inc['name']}: {top_inc['amount']:,.0f} ₽."
-        return f"Доходы: {income:,.0f} ₽."
-
-    if "итог" in q or "баланс" in q or "остаток" in q:
-        return f"Итог: {net:,.0f} ₽ (доходы {income:,.0f} ₽, расходы {expenses:,.0f} ₽)."
-
-    if "месяц" in q and "измен" in q:
-        trend = analytics.get("trend_monthly") or []
-        if len(trend) >= 2:
-            last, prev = trend[-1], trend[-2]
-            diff = last["expense"] - prev["expense"]
-            direction = "выросли" if diff > 0 else "снизились"
-            return f"Расходы {direction} на {abs(diff):,.0f} ₽: было {prev['expense']:,.0f} ₽, стало {last['expense']:,.0f} ₽."
-        return "Недостаточно данных для сравнения месяцев."
-
-    # Fallback
-    return "Открой аналитику: там донаты по категориям и динамика. Спроси точнее — например: 'сколько потратил на фастфуд?' или 'почему итог месяца в минусе?'."
 
 
 if __name__ == "__main__":
