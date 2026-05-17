@@ -47,7 +47,7 @@ python -m pip install -r requirements.txt
 
 ## Run
 
-Recommended:
+Recommended for local Python:
 
 ```powershell
 python -m flask --app app run --host 127.0.0.1 --port 5059
@@ -66,6 +66,27 @@ python app.py
 ```
 
 It uses the same local port, `5059`.
+
+## Docker
+
+Build and run with Docker Compose:
+
+```powershell
+docker compose up --build
+```
+
+Open:
+
+```text
+http://127.0.0.1:5059
+```
+
+Persistent local state is mounted from the host:
+
+- `./data:/app/data`
+- `./models:/app/models`
+
+For LLM-backed answers, copy `.env.example` to `.env` and fill the keys you need. Do not commit `.env` or token files.
 
 ## LLM Configuration
 

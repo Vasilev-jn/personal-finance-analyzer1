@@ -148,14 +148,14 @@ class AgentResult:
 class AgentLLMClient:
     def __init__(
         self,
-        api_key: str = "",
-        model: str = "llama-3.1-8b-instant",
-        api_url: str = "https://api.groq.com/openai/v1/chat/completions",
+        api_key: Optional[str] = "",
+        model: Optional[str] = "llama-3.1-8b-instant",
+        api_url: Optional[str] = "https://api.groq.com/openai/v1/chat/completions",
         timeout: int = 20,
     ) -> None:
-        self.api_key = api_key.strip()
-        self.model = model.strip()
-        self.api_url = api_url.strip()
+        self.api_key = (api_key or "").strip()
+        self.model = (model or "").strip()
+        self.api_url = (api_url or "").strip()
         self.timeout = timeout
 
     def is_ready(self) -> bool:
