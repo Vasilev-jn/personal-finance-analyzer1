@@ -2444,6 +2444,7 @@ function setupAgent() {
   const input = document.getElementById("agent-question");
   const messages = document.getElementById("agent-messages");
   const status = document.getElementById("agent-status");
+  const conversationHistory = [];
 
   toggle.title = "Открыть финансового агента";
 
@@ -2636,6 +2637,7 @@ function setupAgent() {
   async function sendMessage() {
     const q = input.value.trim();
     if (!q || sendBtn.disabled) return;
+    const historyPayload = conversationHistory.slice(-6);
     appendMessage(q, "user", "Вы");
     input.value = "";
     sendBtn.disabled = true;
@@ -2646,7 +2648,7 @@ function setupAgent() {
       const data = await apiJson("/api/agent-answer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: q }),
+        body: JSON.stringify({ question: q, history: historyPayload }),
       });
       loading.remove();
       const sourceLabel =
@@ -2658,7 +2660,10 @@ function setupAgent() {
             ? "Локально · навигация"
             : "Локально · расчёт";
       setStatus("Печатаю ответ");
-      await appendStreamingMessage(data.answer || "Нет ответа", sourceLabel);
+      const answerText = data.answer || "Нет ответа";
+      await appendStreamingMessage(answerText, sourceLabel);
+      conversationHistory.push({ role: "user", content: q }, { role: "assistant", content: answerText });
+      if (conversationHistory.length > 12) conversationHistory.splice(0, conversationHistory.length - 12);
       setStatus("Готов к вопросам");
     } catch (e) {
       loading.remove();

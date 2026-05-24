@@ -351,6 +351,36 @@ def test_agent_greeting_does_not_trigger_financial_report_or_llm(client):
     assert "Расходы:" not in payload["answer"]
 
 
+def test_agent_non_finance_text_does_not_trigger_llm(client):
+    class FakeLLM:
+        model = "fake-model"
+
+        def __init__(self):
+            self.calls = 0
+
+        def is_ready(self):
+            return True
+
+        def complete(self, messages, max_tokens=900):
+            self.calls += 1
+            return "LLM answer"
+
+    fake = FakeLLM()
+    app_module.agent_llm_client = fake
+
+    resp = client.post(
+        "/api/agent-answer",
+        json={"question": "docker compose exec -T app python -c \"print('ok')\""},
+    )
+
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["tier"] == "conversation"
+    assert payload["source"] == "local"
+    assert fake.calls == 0
+    assert "не про финансы или данные MoneyMap" in payload["answer"]
+
+
 def test_agent_transfer_answer_uses_separate_transfer_bucket(client, make_operation):
     client.seed_operation(
         make_operation(
@@ -379,6 +409,101 @@ def test_agent_transfer_answer_uses_separate_transfer_bucket(client, make_operat
     assert payload["source"] == "local"
     assert "10 000" in payload["answer"]
     assert "не входят в расходы" in payload["answer"]
+
+
+def test_agent_routes_factual_finance_question_to_llm_when_ready(client, make_operation):
+    class FakeLLM:
+        model = "fake-model"
+
+        def __init__(self):
+            self.messages = []
+
+        def is_ready(self):
+            return True
+
+        def complete(self, messages, max_tokens=900):
+            self.messages = messages
+            return "Смотри Главная → «Сводка» и Аналитика → Расходы."
+
+    fake = FakeLLM()
+    app_module.agent_llm_client = fake
+    client.seed_operation(
+        make_operation(
+            op_id="llm-food-op",
+            dt=date.today(),
+            amount=Decimal("-100"),
+            description="Lunch",
+            category_id="base_food_fastfood",
+        )
+    )
+
+    resp = client.post("/api/agent-answer", json={"question": "Куда ушло больше всего денег?"})
+
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["tier"] == "analytical"
+    assert payload["source"] == "llm"
+    assert payload["model"] == "fake-model"
+    prompt = fake.messages[-1]["content"]
+    assert "app_architecture" in prompt
+    assert "assistant_policy" in prompt
+
+
+def test_agent_sends_savings_plan_and_history_to_llm(client, make_operation):
+    class FakeLLM:
+        model = "fake-model"
+
+        def __init__(self):
+            self.messages = []
+
+        def is_ready(self):
+            return True
+
+        def complete(self, messages, max_tokens=900):
+            self.messages = messages
+            return "Нужно откладывать 35 000 ₽/мес и сверить это с расходами."
+
+    fake = FakeLLM()
+    app_module.agent_llm_client = fake
+    client.put("/api/profile", json={"income": "100000", "goal_saved": "30000"})
+    client.seed_operation(
+        make_operation(
+            op_id="plan-supermarket",
+            dt=date(2026, 1, 10),
+            amount=Decimal("-50000"),
+            description="Groceries",
+            category_id="base_shopping_groceries",
+        )
+    )
+    client.seed_operation(
+        make_operation(
+            op_id="plan-marketplace",
+            dt=date(2026, 2, 10),
+            amount=Decimal("-30000"),
+            description="Marketplace",
+            category_id="base_shopping_marketplace",
+        )
+    )
+
+    resp = client.post(
+        "/api/agent-answer",
+        json={
+            "question": "Расскажи как накопить мне 100000 за 2 месяца и как стоит работать с расходами",
+            "history": [{"role": "user", "content": "предыдущий вопрос про накопления"}],
+        },
+    )
+
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["source"] == "llm"
+    prompt = fake.messages[-1]["content"]
+    assert "conversation_history" in prompt
+    assert "предыдущий вопрос про накопления" in prompt
+    assert "savings_plan" in prompt
+    assert '"question_goal_horizon_months":2.0' in prompt
+    assert '"amount_to_save_total":70000.0' in prompt
+    assert '"required_monthly_saving":35000.0' in prompt
+    assert "cut_candidates" in prompt
 
 
 def test_analytics_and_operations_expose_subscriptions(client, make_operation):
@@ -422,7 +547,7 @@ def test_agent_subscription_question_stays_local(client, make_operation):
             self.called = False
 
         def is_ready(self):
-            return True
+            return False
 
         def complete(self, messages, max_tokens=900):
             self.called = True
@@ -462,7 +587,7 @@ def test_agent_budget_question_skips_llm_and_uses_question_goal(client, make_ope
             self.called = False
 
         def is_ready(self):
-            return True
+            return False
 
         def complete(self, messages, max_tokens=900):
             self.called = True
@@ -514,7 +639,7 @@ def test_agent_goal_question_stays_local(client, make_operation):
             self.called = False
 
         def is_ready(self):
-            return True
+            return False
 
         def complete(self, messages, max_tokens=900):
             self.called = True
@@ -565,7 +690,7 @@ def test_agent_forecast_question_stays_local(client, make_operation):
             self.called = False
 
         def is_ready(self):
-            return True
+            return False
 
         def complete(self, messages, max_tokens=900):
             self.called = True
@@ -604,7 +729,7 @@ def test_agent_anomaly_question_stays_local(client, make_operation):
             self.called = False
 
         def is_ready(self):
-            return True
+            return False
 
         def complete(self, messages, max_tokens=900):
             self.called = True

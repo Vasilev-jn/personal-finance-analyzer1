@@ -943,7 +943,8 @@ def api_agent_answer():
     if not question:
         return jsonify({"error": "question is required"}), 400
 
-    result = agent_service.answer_agent_question(question, user_profile, agent_analytics_payload(), agent_llm_client)
+    history = payload.get("history") if isinstance(payload.get("history"), list) else []
+    result = agent_service.answer_agent_question(question, user_profile, agent_analytics_payload(), agent_llm_client, history)
     return jsonify({"answer": result.answer, "tier": result.tier, "source": result.source, "model": result.model})
 
 

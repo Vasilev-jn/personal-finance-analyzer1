@@ -137,6 +137,57 @@ QUESTION_MARKERS = (
 )
 
 
+APP_ARCHITECTURE_CONTEXT = {
+    "product": "MoneyMap",
+    "purpose": "многопользовательский сервис анализа личных финансов",
+    "storage": "PostgreSQL через SQLAlchemy; данные фильтруются по текущему user_id",
+    "core_entities": [
+        "users",
+        "sessions",
+        "accounts",
+        "transactions",
+        "categories",
+        "uploaded_files",
+        "user_profiles",
+        "category_corrections",
+        "custom_category_mappings",
+    ],
+    "import_flow": [
+        "пользователь выбирает банк и загружает выписку",
+        "backend выбирает банковский адаптер",
+        "операции нормализуются в общую модель Operation",
+        "категоризация применяет правила, mapping, ML/LLM fallback",
+        "уникальные операции сохраняются в transactions",
+        "аналитика строится только по текущему пользователю",
+    ],
+    "ui_navigation": {
+        "Главная": "сводка доходов, расходов, итога, импорт файла, загруженные выписки, цели, переводы, последние операции",
+        "Аналитика → Расходы": "категории расходов, динамика, топ трат",
+        "Аналитика → Доходы": "источники доходов и динамика",
+        "Аналитика → Переводы": "переводы отдельно от расходов",
+        "Аналитика → Подписки": "регулярные списания и похожие подписки",
+        "История": "таблица операций, фильтры, ручная смена категории",
+        "Профиль": "доход, день зарплаты, цели, настройки и управление файлами",
+        "FAQ": "инструкции по выгрузке выписок из банков",
+    },
+    "assistant_policy": {
+        "trivial": (
+            "Если пользователь спрашивает простой факт, который уже виден в интерфейсе "
+            "(сумма доходов, расходов, топ категории, список операций, загруженные файлы), "
+            "не расписывай длинный анализ: коротко скажи, где это посмотреть в интерфейсе."
+        ),
+        "non_trivial": (
+            "Если вопрос требует интерпретации, прогноза, стратегии, сценария накоплений, рисков, "
+            "оптимизации или связи профиля с тратами, используй переданные агрегаты и сделай расчёты."
+        ),
+        "limits": (
+            "Не выдумывай операций, балансов на счетах и будущих доходов. Если данных не хватает, "
+            "явно скажи, какие поля профиля или выписки нужны."
+        ),
+    },
+}
+
+
 @dataclass
 class AgentResult:
     answer: str
@@ -237,7 +288,7 @@ def conversation_answer(question: str) -> str:
         )
     if not is_finance_related(question):
         return (
-            "Я отвечаю только на вопросы по данным MoneyMap. Задай финансовый вопрос: про расходы, "
+            "Похоже, вопрос не про финансы или данные MoneyMap. Я отвечаю только на финансовые вопросы: про расходы, "
             "доходы, переводы, подписки, категории, цель или лимит до зарплаты."
         )
     return (
@@ -651,13 +702,22 @@ def anomalies_answer(analytics: dict, profile: dict) -> str:
     )
 
 
-def analytical_llm_answer(question: str, profile: dict, analytics: dict, llm_client: AgentLLMClient) -> Optional[str]:
+def analytical_llm_answer(
+    question: str,
+    profile: dict,
+    analytics: dict,
+    llm_client: AgentLLMClient,
+    conversation_history: Optional[list[dict]] = None,
+) -> Optional[str]:
     if not llm_client.is_ready():
         return None
 
     compact_context = {
+        "app_architecture": APP_ARCHITECTURE_CONTEXT,
+        "conversation_history": compact_conversation_history(conversation_history),
         "profile": profile,
         "profile_insights": profile_insights(profile, analytics),
+        "savings_plan": savings_plan_context(question, profile, analytics),
         "data_period": analytics.get("data_period"),
         "totals": analytics.get("totals"),
         "current_month_totals": analytics.get("current_month_totals"),
@@ -677,6 +737,16 @@ def analytical_llm_answer(question: str, profile: dict, analytics: dict, llm_cli
             "role": "system",
             "content": (
                 "Ты финансовый ИИ-агент MoneyMap. Отвечай на русском. "
+                "Ты получаешь вопрос пользователя, агрегированные финансовые данные и описание архитектуры приложения. "
+                "Сначала сам классифицируй вопрос: тривиальный интерфейсный запрос или нетривиальная аналитическая задача. "
+                "Если вопрос тривиальный, отвечай коротко и укажи, где в MoneyMap посмотреть ответ; не делай длинный отчёт. "
+                "Если вопрос нетривиальный, сделай расчёты и объясни выводы на основе переданных агрегатов. "
+                "Не показывай пользователю строку с классификацией вопроса. "
+                "Для вопросов про накопления, лимиты и бюджет обязательно используй context.savings_plan: "
+                "сопоставь цель с доходом, базовым месячным расходом, доступным остатком и разрывом до цели. "
+                "Не дели цель на месяцы в отрыве от уже накопленной суммы и текущих расходов. "
+                "Если current_month_has_operations=false, для планирования используй baseline_monthly_expense из savings_plan, а не нулевые расходы текущего месяца. "
+                "Если пользователь пишет продолжение вроде «это», «такое», «этот план», используй conversation_history; если связи всё равно нет, попроси уточнить. "
                 "Используй только переданные агрегированные данные, не выдумывай операции и точные факты. "
                 "Если данных не хватает, явно скажи, чего не хватает. "
                 "Поле totals и категории расходов уже очищены от переводов; переводы лежат отдельно в transfer_* и не считаются расходами. "
@@ -703,10 +773,21 @@ def analytical_llm_answer(question: str, profile: dict, analytics: dict, llm_cli
     return llm_client.complete(messages)
 
 
-def answer_agent_question(question: str, profile: dict, analytics: dict, llm_client: AgentLLMClient) -> AgentResult:
+def answer_agent_question(
+    question: str,
+    profile: dict,
+    analytics: dict,
+    llm_client: AgentLLMClient,
+    conversation_history: Optional[list[dict]] = None,
+) -> AgentResult:
     intent = detect_intent(question)
     if intent == "conversation":
         return AgentResult(answer=conversation_answer(question), tier="conversation", source="local")
+
+    llm_answer = analytical_llm_answer(question, profile, analytics, llm_client, conversation_history)
+    if llm_answer:
+        return AgentResult(answer=llm_answer, tier="analytical", source="llm", model=llm_client.model)
+
     if intent == "factual":
         return AgentResult(answer=factual_answer(question, analytics), tier="factual", source="local")
 
@@ -725,9 +806,6 @@ def answer_agent_question(question: str, profile: dict, analytics: dict, llm_cli
     if intent == "anomalies":
         return AgentResult(answer=anomalies_answer(analytics, profile), tier="analytical", source="local_calculation")
 
-    llm_answer = analytical_llm_answer(question, profile, analytics, llm_client)
-    if llm_answer:
-        return AgentResult(answer=llm_answer, tier="analytical", source="llm", model=llm_client.model)
     return AgentResult(answer=analytical_fallback_answer(question, profile, analytics), tier="analytical", source="local_fallback")
 
 
@@ -753,6 +831,145 @@ def extract_goal_amount(text: str) -> Optional[float]:
         return float(match.group(1).replace(" ", ""))
     except Exception:
         return None
+
+
+def extract_goal_horizon_months(text: str) -> Optional[float]:
+    q = _normalized_query(text)
+    if not q:
+        return None
+    if "полгода" in q or "пол года" in q:
+        return 6.0
+    if "квартал" in q:
+        return 3.0
+    if re.search(r"\bгод\b", q):
+        return 12.0
+
+    month_match = re.search(r"(?:за|на|через)\s+(\d{1,2})\s*(?:мес|месяц)", q)
+    if not month_match:
+        month_match = re.search(r"(\d{1,2})\s*(?:мес|месяц)", q)
+    if month_match:
+        return max(float(month_match.group(1)), 1.0)
+
+    week_match = re.search(r"(?:за|на|через)\s+(\d{1,2})\s*(?:недел|нед)", q)
+    if week_match:
+        return max(float(week_match.group(1)) / 4.345, 0.25)
+
+    day_match = re.search(r"(?:за|на|через)\s+(\d{1,3})\s*(?:дн|день|дня|дней)", q)
+    if day_match:
+        return max(float(day_match.group(1)) / 30.44, 0.1)
+    return None
+
+
+def compact_conversation_history(history: Optional[list[dict]]) -> list[dict]:
+    if not isinstance(history, list):
+        return []
+    compact = []
+    for item in history[-6:]:
+        if not isinstance(item, dict):
+            continue
+        role = item.get("role")
+        if role not in {"user", "assistant"}:
+            continue
+        content = str(item.get("content") or item.get("text") or "").strip()
+        if not content:
+            continue
+        compact.append({"role": role, "content": content[:700]})
+    return compact
+
+
+def savings_plan_context(question: str, profile: dict, analytics: dict) -> dict:
+    question_goal = extract_goal_amount(question)
+    profile_goal = _float_or_none(profile.get("goal_amount"))
+    goal_amount = question_goal or profile_goal
+    horizon_months = extract_goal_horizon_months(question)
+    profile_saved = _float_or_none(profile.get("goal_saved")) or 0.0
+    q = _normalized_query(question)
+    additional_goal = any(marker in q for marker in ("ещё", "еще", "донакоп", "дополнительно", "сверх", "осталось"))
+
+    amount_to_save = None
+    interpretation = None
+    if goal_amount:
+        if question_goal and additional_goal:
+            amount_to_save = goal_amount
+            interpretation = "question_amount_is_additional_savings"
+        else:
+            amount_to_save = max(goal_amount - profile_saved, 0)
+            interpretation = "question_amount_is_final_target_minus_profile_saved"
+
+    data_period = analytics.get("data_period") or {}
+    period_days = int(data_period.get("days") or 0)
+    totals = analytics.get("totals") or {}
+    current_month_totals = analytics.get("current_month_totals") or {}
+    total_expense = float(totals.get("expense") or 0)
+    total_income = float(totals.get("income") or 0)
+    avg_monthly_expense = total_expense / period_days * 30.44 if period_days > 0 else 0.0
+    avg_monthly_income = total_income / period_days * 30.44 if period_days > 0 else 0.0
+    current_month_expense = float(current_month_totals.get("expense") or 0)
+    current_month_income = float(current_month_totals.get("income") or 0)
+    has_current_month_ops = bool(data_period.get("current_month_has_operations"))
+
+    baseline_expense = current_month_expense if has_current_month_ops else avg_monthly_expense
+    baseline_income = _float_or_none(profile.get("income")) or current_month_income or avg_monthly_income
+    income_source = "profile" if _float_or_none(profile.get("income")) else "current_month" if current_month_income else "history_average"
+
+    required_monthly_saving = amount_to_save / horizon_months if amount_to_save is not None and horizon_months else None
+    required_daily_saving = amount_to_save / (horizon_months * 30.44) if amount_to_save is not None and horizon_months else None
+    monthly_free_cash = baseline_income - baseline_expense if baseline_income else None
+    monthly_gap = (
+        required_monthly_saving - monthly_free_cash
+        if required_monthly_saving is not None and monthly_free_cash is not None
+        else None
+    )
+    monthly_expense_ceiling = max(baseline_income - required_monthly_saving, 0) if baseline_income and required_monthly_saving is not None else None
+    daily_expense_limit = monthly_expense_ceiling / 30.44 if monthly_expense_ceiling is not None else None
+
+    cut_candidates = []
+    for item in _compact_items(analytics.get("by_base_expense"), limit=8, abs_amount=True):
+        amount = float(item.get("amount") or 0)
+        monthly_estimate = amount / period_days * 30.44 if period_days > 0 else amount
+        cut_candidates.append(
+            {
+                "name": item.get("name"),
+                "history_total": amount,
+                "monthly_estimate": monthly_estimate,
+                "twenty_percent_reduction": monthly_estimate * 0.2,
+                "reduction_priority": category_reduction_priority(str(item.get("name") or "")),
+            }
+        )
+
+    return {
+        "question_goal_amount": question_goal,
+        "profile_goal_amount": profile_goal,
+        "profile_goal_saved": profile_saved,
+        "interpreted_goal_amount": goal_amount,
+        "goal_interpretation": interpretation,
+        "question_goal_horizon_months": horizon_months,
+        "amount_to_save_total": amount_to_save,
+        "required_monthly_saving": required_monthly_saving,
+        "required_daily_saving": required_daily_saving,
+        "configured_or_estimated_monthly_income": baseline_income,
+        "income_source": income_source,
+        "current_month_has_operations": has_current_month_ops,
+        "current_month_expense": current_month_expense,
+        "average_monthly_expense_from_history": avg_monthly_expense,
+        "baseline_monthly_expense": baseline_expense,
+        "monthly_free_cash_before_goal": monthly_free_cash,
+        "monthly_gap_to_goal": monthly_gap,
+        "monthly_expense_ceiling_for_goal": monthly_expense_ceiling,
+        "daily_expense_limit_for_goal": daily_expense_limit,
+        "cut_candidates": cut_candidates,
+    }
+
+
+def category_reduction_priority(name: str) -> str:
+    q = name.lower()
+    if any(marker in q for marker in ("маркетплейс", "алкоголь", "ресторан", "фастфуд", "развлеч", "игры", "такси")):
+        return "high_discretionary"
+    if any(marker in q for marker in ("супермаркет", "одежда", "красота", "кафе")):
+        return "medium_optimize"
+    if any(marker in q for marker in ("налог", "пошлин", "коммун", "топливо", "азс", "образован", "лекар", "здоров")):
+        return "low_or_conditional"
+    return "review"
 
 
 def money(value: float) -> str:
