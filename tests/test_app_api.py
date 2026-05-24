@@ -4,16 +4,80 @@ import io
 
 import pytest
 from openpyxl import Workbook
+from sqlalchemy.exc import IntegrityError
 
 import app as app_module
-from finance_app.domain import Vault
+from finance_app.domain import Account, Vault
 from finance_app.services import storage
+
+
+class AuthenticatedClient:
+    def __init__(self, raw_client, token: str, user_id: int):
+        self.raw = raw_client
+        self.token = token
+        self.user_id = user_id
+
+    def _headers(self, path: str, headers: dict | None = None) -> dict:
+        merged = dict(headers or {})
+        public_auth_paths = ("/api/auth/login", "/api/auth/register", "/api/auth/set")
+        if not path.startswith(public_auth_paths):
+            merged.setdefault("X-Auth-Token", self.token)
+        return merged
+
+    def get(self, path: str, **kwargs):
+        kwargs["headers"] = self._headers(path, kwargs.get("headers"))
+        return self.raw.get(path, **kwargs)
+
+    def post(self, path: str, **kwargs):
+        kwargs["headers"] = self._headers(path, kwargs.get("headers"))
+        return self.raw.post(path, **kwargs)
+
+    def put(self, path: str, **kwargs):
+        kwargs["headers"] = self._headers(path, kwargs.get("headers"))
+        return self.raw.put(path, **kwargs)
+
+    def delete(self, path: str, **kwargs):
+        kwargs["headers"] = self._headers(path, kwargs.get("headers"))
+        return self.raw.delete(path, **kwargs)
+
+    def seed_operation(self, op):
+        app_module.vault.add_operation(op)
+        account = Account(id=op.account_id, bank=op.bank, name="Test", number="123")
+        with app_module.database.SessionLocal() as db:
+            app_module.database.upsert_accounts(db, self.user_id, [account])
+            try:
+                app_module.database.insert_operations(db, self.user_id, [op])
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                app_module.database.update_operations(db, self.user_id, [op])
+                db.commit()
+
+    def seed_file(self, *, file_id: str, name: str, bank: str, count: int, content_hash: str | None = None):
+        with app_module.database.SessionLocal() as db:
+            app_module.database.add_uploaded_file(
+                db,
+                self.user_id,
+                file_id,
+                name,
+                bank,
+                count,
+                content_hash or f"hash-{file_id}",
+            )
+            db.commit()
+
+    def seed_correction(self, change: dict):
+        app_module.corrections_log.append(change)
+        with app_module.database.SessionLocal() as db:
+            app_module.database.add_correction(db, self.user_id, change)
+            db.commit()
 
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "STATE_PATH", tmp_path / "vault_state.json")
     monkeypatch.setattr(storage, "PASS_PATH", tmp_path / "auth.json")
+    app_module.database.reset_db_for_tests(f"sqlite:///{tmp_path / 'moneymap-test.db'}")
 
     app_module.vault = Vault()
     app_module.vault.categories = app_module.CATEGORY_INDEX
@@ -23,13 +87,15 @@ def client(tmp_path, monkeypatch):
     app_module.user_profile = storage.normalize_profile({})
     app_module.user_profile_exists = False
     app_module.agent_llm_client = app_module.agent_service.AgentLLMClient()
-    app_module.PASSWORD_RECORD = None
-    app_module.LEGACY_PASSWORD_HASH = ""
-    app_module.STATE_SECRET = ""
-    app_module.AUTH_SESSIONS.clear()
 
     with app_module.app.test_client() as test_client:
-        yield test_client
+        register = test_client.post(
+            "/api/auth/register",
+            json={"email": "test@example.com", "password": "12345"},
+        )
+        assert register.status_code == 200
+        payload = register.get_json()
+        yield AuthenticatedClient(test_client, payload["token"], payload["user"]["id"])
 
 
 def test_manual_recategorization_and_undo(client, make_operation):
@@ -41,7 +107,7 @@ def test_manual_recategorization_and_undo(client, make_operation):
         category_id="base_unknown",
         categorization_source="fallback_stub",
     )
-    app_module.vault.add_operation(op)
+    client.seed_operation(op)
 
     resp = client.post(
         "/api/operations/api-op-1/category",
@@ -68,7 +134,7 @@ def test_custom_mapping_and_unknown_reclassify(client, make_operation):
         category_id="base_unknown",
         categorization_source="fallback_stub",
     )
-    app_module.vault.add_operation(op)
+    client.seed_operation(op)
 
     resp = client.post(
         "/api/mappings/custom",
@@ -88,7 +154,7 @@ def test_export_operations_json(client, make_operation):
         description="Export me",
         category_id="base_food_fastfood",
     )
-    app_module.vault.add_operation(op)
+    client.seed_operation(op)
 
     resp = client.get("/api/export?kind=operations&format=json")
     assert resp.status_code == 200
@@ -97,24 +163,19 @@ def test_export_operations_json(client, make_operation):
 
 
 def test_auth_session_token_and_protected_endpoints(client):
-    resp_set = client.post("/api/auth/set", json={"password": "12345"})
-    assert resp_set.status_code == 200
-    token = resp_set.get_json()["token"]
-    assert token
+    token = client.token
 
-    resp_unauth = client.get("/api/files")
+    resp_unauth = client.raw.get("/api/files")
     assert resp_unauth.status_code == 401
 
-    resp_auth = client.get("/api/files", headers={"X-Auth-Token": token})
+    resp_auth = client.raw.get("/api/files", headers={"X-Auth-Token": token})
     assert resp_auth.status_code == 200
 
 
 def test_auth_logout_and_change_password(client):
-    resp_set = client.post("/api/auth/set", json={"password": "12345"})
-    assert resp_set.status_code == 200
-    old_token = resp_set.get_json()["token"]
+    old_token = client.token
 
-    wrong_change = client.post(
+    wrong_change = client.raw.post(
         "/api/auth/change",
         json={"current_password": "wrong", "new_password": "67890"},
         headers={"X-Auth-Token": old_token},
@@ -122,7 +183,7 @@ def test_auth_logout_and_change_password(client):
     assert wrong_change.status_code == 401
     assert wrong_change.get_json()["error"] == "invalid_current_password"
 
-    changed = client.post(
+    changed = client.raw.post(
         "/api/auth/change",
         json={"current_password": "12345", "new_password": "67890"},
         headers={"X-Auth-Token": old_token},
@@ -131,14 +192,42 @@ def test_auth_logout_and_change_password(client):
     new_token = changed.get_json()["token"]
     assert new_token and new_token != old_token
 
-    assert client.get("/api/files", headers={"X-Auth-Token": old_token}).status_code == 401
-    assert client.get("/api/files", headers={"X-Auth-Token": new_token}).status_code == 200
-    assert client.post("/api/auth/login", json={"password": "12345"}).status_code == 401
-    assert client.post("/api/auth/login", json={"password": "67890"}).status_code == 200
+    assert client.raw.get("/api/files", headers={"X-Auth-Token": old_token}).status_code == 401
+    assert client.raw.get("/api/files", headers={"X-Auth-Token": new_token}).status_code == 200
+    assert client.raw.post("/api/auth/login", json={"email": "test@example.com", "password": "12345"}).status_code == 401
+    assert client.raw.post("/api/auth/login", json={"email": "test@example.com", "password": "67890"}).status_code == 200
 
-    logout = client.post("/api/auth/logout", headers={"X-Auth-Token": new_token})
+    logout = client.raw.post("/api/auth/logout", headers={"X-Auth-Token": new_token})
     assert logout.status_code == 200
-    assert client.get("/api/files", headers={"X-Auth-Token": new_token}).status_code == 401
+    assert client.raw.get("/api/files", headers={"X-Auth-Token": new_token}).status_code == 401
+
+
+def test_users_do_not_see_each_other_operations_or_profile(client, make_operation):
+    second_register = client.raw.post(
+        "/api/auth/register",
+        json={"email": "second@example.com", "password": "12345"},
+    )
+    assert second_register.status_code == 200
+    second_token = second_register.get_json()["token"]
+
+    client.seed_operation(
+        make_operation(
+            op_id="owner-food",
+            dt=date(2025, 2, 10),
+            amount=Decimal("-500"),
+            description="Owner lunch",
+            category_id="base_food_fastfood",
+        )
+    )
+    client.put("/api/profile", json={"income": "120000", "priority": "Owner priority"})
+
+    owner_ops = client.get("/api/operations").get_json()["items"]
+    assert [item["id"] for item in owner_ops] == ["owner-food"]
+
+    second_ops = client.raw.get("/api/operations", headers={"X-Auth-Token": second_token}).get_json()["items"]
+    assert second_ops == []
+    second_profile = client.raw.get("/api/profile", headers={"X-Auth-Token": second_token}).get_json()
+    assert second_profile["exists"] is False
 
 
 def test_profile_persists_in_backend_state(client):
@@ -202,7 +291,7 @@ def test_agent_uses_profile_for_local_analytical_fallback(client):
 
 
 def test_agent_expense_answer_excludes_transfers(client, make_operation):
-    app_module.vault.add_operation(
+    client.seed_operation(
         make_operation(
             op_id="food-op",
             dt=date.today(),
@@ -211,7 +300,7 @@ def test_agent_expense_answer_excludes_transfers(client, make_operation):
             category_id="base_food_fastfood",
         )
     )
-    app_module.vault.add_operation(
+    client.seed_operation(
         make_operation(
             op_id="transfer-op",
             dt=date.today(),
@@ -263,7 +352,7 @@ def test_agent_greeting_does_not_trigger_financial_report_or_llm(client):
 
 
 def test_agent_transfer_answer_uses_separate_transfer_bucket(client, make_operation):
-    app_module.vault.add_operation(
+    client.seed_operation(
         make_operation(
             op_id="food-op",
             dt=date.today(),
@@ -272,7 +361,7 @@ def test_agent_transfer_answer_uses_separate_transfer_bucket(client, make_operat
             category_id="base_food_fastfood",
         )
     )
-    app_module.vault.add_operation(
+    client.seed_operation(
         make_operation(
             op_id="transfer-op",
             dt=date.today(),
@@ -294,7 +383,7 @@ def test_agent_transfer_answer_uses_separate_transfer_bucket(client, make_operat
 
 def test_analytics_and_operations_expose_subscriptions(client, make_operation):
     for idx, dt in enumerate([date(2025, 1, 5), date(2025, 2, 5), date(2025, 3, 5)], start=1):
-        app_module.vault.add_operation(
+        client.seed_operation(
             make_operation(
                 op_id=f"netflix-{idx}",
                 dt=dt,
@@ -304,7 +393,7 @@ def test_analytics_and_operations_expose_subscriptions(client, make_operation):
                 category_id="base_entertainment_online_video",
             )
         )
-    app_module.vault.add_operation(
+    client.seed_operation(
         make_operation(
             op_id="music-once",
             dt=date(2025, 3, 6),
@@ -343,7 +432,7 @@ def test_agent_subscription_question_stays_local(client, make_operation):
     app_module.agent_llm_client = fake
     client.put("/api/profile", json={"income": "100000"})
     for idx, dt in enumerate([date(2025, 1, 5), date(2025, 2, 5), date(2025, 3, 5)], start=1):
-        app_module.vault.add_operation(
+        client.seed_operation(
             make_operation(
                 op_id=f"netflix-agent-{idx}",
                 dt=dt,
@@ -393,7 +482,7 @@ def test_agent_budget_question_skips_llm_and_uses_question_goal(client, make_ope
             "tone": "Прямой",
         },
     )
-    app_module.vault.add_operation(
+    client.seed_operation(
         make_operation(
             op_id="current-month-food",
             dt=date.today(),
@@ -446,7 +535,7 @@ def test_agent_goal_question_stays_local(client, make_operation):
             "tone": "Прямой",
         },
     )
-    app_module.vault.add_operation(
+    client.seed_operation(
         make_operation(
             op_id="goal-food",
             dt=date.today(),
@@ -486,7 +575,7 @@ def test_agent_forecast_question_stays_local(client, make_operation):
     app_module.agent_llm_client = fake
     payday = (date.today() + timedelta(days=5)).day
     client.put("/api/profile", json={"income": "100000", "payday": str(payday)})
-    app_module.vault.add_operation(
+    client.seed_operation(
         make_operation(
             op_id="forecast-food",
             dt=date.today(),
@@ -523,7 +612,7 @@ def test_agent_anomaly_question_stays_local(client, make_operation):
 
     fake = RaisingLLM()
     app_module.agent_llm_client = fake
-    app_module.vault.add_operation(
+    client.seed_operation(
         make_operation(
             op_id="anomaly-food",
             dt=date.today(),
@@ -532,7 +621,7 @@ def test_agent_anomaly_question_stays_local(client, make_operation):
             category_id="base_food_fastfood",
         )
     )
-    app_module.vault.add_operation(
+    client.seed_operation(
         make_operation(
             op_id="anomaly-taxi",
             dt=date.today(),
@@ -692,6 +781,61 @@ def test_import_rejects_same_file_content(client):
     assert len(app_module.vault.operations) == 1
 
 
+def test_import_skips_duplicate_operations_inside_same_file(client):
+    row = "01.12.2025,Main,123,income,1000,RUB,Salary,Employer,,Salary"
+    csv_data = "\n".join(
+        [
+            "operationDate,accountName,accountNumber,type,amount,currency,comment,merchant,mcc,category",
+            row,
+            row,
+        ]
+    ).encode("utf-8")
+
+    resp = client.post(
+        "/api/import",
+        data={"bank": "alfa", "file": (io.BytesIO(csv_data), "same-file-duplicates.csv")},
+        content_type="multipart/form-data",
+    )
+
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["imported"] == 1
+    assert payload["import_report"]["duplicates"] == 1
+    assert len(app_module.uploaded_files) == 1
+    assert len(app_module.vault.operations) == 1
+
+
+def test_same_file_content_can_be_imported_by_different_users(client):
+    csv_data = "\n".join(
+        [
+            "operationDate,accountName,accountNumber,type,amount,currency,comment,merchant,mcc,category",
+            "01.12.2025,Main,123,income,1000,RUB,Salary,Employer,,Salary",
+        ]
+    ).encode("utf-8")
+    second_register = client.raw.post(
+        "/api/auth/register",
+        json={"email": "second@example.com", "password": "12345"},
+    )
+    assert second_register.status_code == 200
+    second_token = second_register.get_json()["token"]
+
+    first = client.post(
+        "/api/import",
+        data={"bank": "alfa", "file": (io.BytesIO(csv_data), "first.csv")},
+        content_type="multipart/form-data",
+    )
+    assert first.status_code == 200
+
+    second = client.raw.post(
+        "/api/import",
+        data={"bank": "alfa", "file": (io.BytesIO(csv_data), "second.csv")},
+        content_type="multipart/form-data",
+        headers={"X-Auth-Token": second_token},
+    )
+    assert second.status_code == 200
+    assert second.get_json()["imported"] == 1
+
+
 def test_import_rejects_same_operations_from_different_file_content(client):
     first_csv = "\n".join(
         [
@@ -781,15 +925,11 @@ def test_delete_file_refreshes_derived_state(client, make_operation):
         category_id="base_food_fastfood",
         source_file_id="file-keep",
     )
-    app_module.vault.add_operation(op_deleted)
-    app_module.vault.add_operation(op_kept)
-    app_module.uploaded_files.extend(
-        [
-            {"id": "file-delete", "name": "delete.csv", "bank": "alfa", "count": 1},
-            {"id": "file-keep", "name": "keep.csv", "bank": "alfa", "count": 1},
-        ]
-    )
-    app_module.corrections_log.append({"operation_id": "op-delete-me", "reason": "old correction"})
+    client.seed_operation(op_deleted)
+    client.seed_operation(op_kept)
+    client.seed_file(file_id="file-delete", name="delete.csv", bank="alfa", count=1)
+    client.seed_file(file_id="file-keep", name="keep.csv", bank="alfa", count=1)
+    client.seed_correction({"operation_id": "op-delete-me", "reason": "old correction"})
     app_module.pipeline._track_unmapped("alfa", "old category")
 
     resp = client.delete("/api/files/file-delete")

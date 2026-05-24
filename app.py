@@ -2,16 +2,18 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 import os
 import hashlib
-import secrets
 import time
-from datetime import datetime, date
+import threading
+from datetime import datetime, date, timedelta, timezone
 
-from flask import Flask, Response, abort, jsonify, redirect, render_template, request, send_from_directory
+from flask import Flask, Response, abort, g, jsonify, redirect, render_template, request, send_from_directory
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from finance_app import category_mapping, rules
 from finance_app.category_tree import CATEGORY_INDEX, iter_leaf_categories
 from finance_app.domain import Operation, OperationType
-from finance_app.services import agent_service, analytics_service, corrections_service, export_service, import_service
+from finance_app.services import agent_service, analytics_service, corrections_service, database, export_service, import_service
 from finance_app.services.categorization import CategorizationPipeline, reclassify_unknown
 from finance_app.domain import Vault
 from finance_app.services.ml_model import SimpleMLModel
@@ -57,26 +59,33 @@ uploaded_files: list = []
 corrections_log: list[dict] = []
 user_profile: dict = storage.normalize_profile({})
 user_profile_exists = False
-PASSWORD_RECORD: dict | None = storage.load_password_record()
-LEGACY_PASSWORD_HASH: str = storage.load_password_hash()
-STATE_SECRET: str = auth_service.record_secret(PASSWORD_RECORD) or LEGACY_PASSWORD_HASH
 SESSION_TTL_SECONDS = 8 * 60 * 60
-AUTH_SESSIONS: dict[str, float] = {}
+REQUEST_RUNTIME_LOCK = threading.RLock()
 
 # путь для сохранения модели
 MODEL_PATH = BASE_DIR / "models" / "expense_clf.pkl"
 
-# при старте пробуем поднять сохранённое состояние
-loaded_state = storage.load_full_state(vault, password_hash=STATE_SECRET)
-if loaded_state.has_state:
-    uploaded_files = loaded_state.uploaded_files
-    corrections_log = loaded_state.corrections
-    user_profile = loaded_state.profile
-    user_profile_exists = loaded_state.has_profile
-    pipeline.replace_custom_mappings(loaded_state.custom_mappings)
+def initialize_database_with_retry() -> None:
+    retries = int(os.getenv("DATABASE_INIT_RETRIES", "30"))
+    delay_seconds = float(os.getenv("DATABASE_INIT_DELAY", "1"))
+    should_retry = bool(os.getenv("DATABASE_URL")) and not database.DATABASE_URL.startswith("sqlite")
+    last_error: OperationalError | None = None
+    for attempt in range(retries if should_retry else 1):
+        try:
+            database.init_db()
+            return
+        except OperationalError as exc:
+            last_error = exc
+            if not should_retry or attempt == retries - 1:
+                raise
+            time.sleep(delay_seconds)
+    if last_error:
+        raise last_error
+
 
 # при старте пытаемся загрузить модель
 ml_model.load(MODEL_PATH)
+initialize_database_with_retry()
 
 
 def serialize_operation(op: Operation) -> dict:
@@ -105,54 +114,78 @@ def parse_date(val: str) -> date | None:
         return None
 
 
-def has_password() -> bool:
-    return PASSWORD_RECORD is not None or bool(LEGACY_PASSWORD_HASH)
+def has_users(db=None) -> bool:
+    owns_session = db is None
+    db = db or database.SessionLocal()
+    try:
+        return db.scalar(select(database.UserModel.id).limit(1)) is not None
+    finally:
+        if owns_session:
+            db.close()
 
 
-def _cleanup_sessions() -> None:
-    now = time.time()
-    expired = [token for token, expiry in AUTH_SESSIONS.items() if expiry <= now]
-    for token in expired:
-        AUTH_SESSIONS.pop(token, None)
+def _session_expiry() -> datetime:
+    return datetime.now(timezone.utc) + timedelta(seconds=SESSION_TTL_SECONDS)
 
 
-def issue_session_token() -> str:
-    _cleanup_sessions()
-    token = secrets.token_urlsafe(32)
-    AUTH_SESSIONS[token] = time.time() + SESSION_TTL_SECONDS
-    return token
+def _aware(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
 
 
-def is_session_valid(token: str) -> bool:
+def issue_session_token(db, user_id: int) -> str:
+    database.cleanup_sessions(db)
+    return database.issue_token(db, user_id, _session_expiry())
+
+
+def user_public_payload(user: database.UserModel | None) -> dict | None:
+    if not user:
+        return None
+    return {"id": user.id, "email": user.email}
+
+
+def authenticated_user_from_token(db, token: str) -> database.UserModel | None:
     if not token:
-        return False
-    _cleanup_sessions()
-    expiry = AUTH_SESSIONS.get(token)
-    if not expiry:
-        return False
-    if expiry <= time.time():
-        AUTH_SESSIONS.pop(token, None)
-        return False
-    return True
+        return None
+    database.cleanup_sessions(db)
+    session = db.get(database.SessionModel, token)
+    if not session:
+        return None
+    if _aware(session.expires_at) <= datetime.now(timezone.utc):
+        db.delete(session)
+        db.commit()
+        return None
+    return db.get(database.UserModel, session.user_id)
 
 
-def verify_current_password(password: str) -> bool:
-    if not has_password():
-        return False
-    if PASSWORD_RECORD:
-        return auth_service.verify_password(password, PASSWORD_RECORD)
-    return hashlib.sha256(password.encode("utf-8")).hexdigest() == LEGACY_PASSWORD_HASH
+def verify_user_password(user: database.UserModel, password: str) -> bool:
+    return auth_service.verify_password(password, user.password_record)
+
+
+def load_user_runtime(db, user_id: int) -> None:
+    global vault, uploaded_files, corrections_log, user_profile, user_profile_exists
+    vault = database.vault_for_user(db, user_id)
+    uploaded_files = database.uploaded_files_for_user(db, user_id)
+    corrections_log = database.corrections_for_user(db, user_id)
+    profile = database.load_profile(db, user_id)
+    user_profile = storage.normalize_profile(profile or {})
+    user_profile_exists = profile is not None
+    pipeline.replace_custom_mappings(database.custom_mappings_for_user(db, user_id))
+    rebuild_pipeline_counters()
+
+
+def current_user_id() -> int:
+    return int(g.current_user.id)
+
+
+def current_db():
+    return g.db
 
 
 def save_runtime_state() -> None:
-    storage.save_full_state(
-        vault,
-        uploaded_files,
-        corrections=corrections_log,
-        custom_mappings=pipeline.list_custom_mappings(),
-        profile=user_profile if user_profile_exists else None,
-        password_hash=STATE_SECRET,
-    )
+    # Legacy JSON persistence is intentionally disabled. Runtime state is stored in SQL tables.
+    return None
 
 
 def rebuild_pipeline_counters() -> None:
@@ -299,9 +332,29 @@ def cleanup_failed_import(file_id: str) -> None:
     rebuild_pipeline_counters()
 
 
+def unique_operations_for_storage(operations: list[Operation], import_report: dict) -> list[Operation]:
+    seen: set[str] = set()
+    unique: list[Operation] = []
+    duplicate_rows = 0
+    for op in operations:
+        fingerprint = database.operation_fingerprint(op)
+        if fingerprint in seen:
+            duplicate_rows += 1
+            continue
+        seen.add(fingerprint)
+        unique.append(op)
+    if duplicate_rows:
+        import_report["duplicates"] = int(import_report.get("duplicates", 0) or 0) + duplicate_rows
+        import_report["skipped"] = int(import_report.get("skipped", 0) or 0) + duplicate_rows
+        import_report["imported"] = max(0, int(import_report.get("imported", len(operations)) or 0) - duplicate_rows)
+        errors = import_report.setdefault("errors", [])
+        errors.append({"reason": f"duplicate operations inside file: {duplicate_rows}"})
+    return unique
+
+
 @app.before_request
-def require_auth():
-    # allow static and auth endpoints
+def open_db_and_require_auth():
+    g.db = database.SessionLocal()
     if (
         request.path in {"/", "/legacy", "/favicon.ico"}
         or request.path.startswith("/static")
@@ -309,11 +362,24 @@ def require_auth():
         or request.path.startswith("/api/auth")
     ):
         return None
-    if not has_password():
-        return None
-    token = request.headers.get("X-Auth-Token")
-    if not is_session_valid(token or ""):
+
+    token = request.headers.get("X-Auth-Token") or ""
+    REQUEST_RUNTIME_LOCK.acquire()
+    g.runtime_lock_acquired = True
+    user = authenticated_user_from_token(g.db, token)
+    if not user:
         return jsonify({"error": "unauthorized"}), 401
+    g.current_user = user
+    load_user_runtime(g.db, user.id)
+
+
+@app.teardown_request
+def close_db_session(_exc):
+    if g.pop("runtime_lock_acquired", False):
+        REQUEST_RUNTIME_LOCK.release()
+    db = g.pop("db", None)
+    if db is not None:
+        db.close()
 
 
 @app.route("/")
@@ -340,57 +406,81 @@ def instruction_image(filename):
 
 @app.route("/api/auth/status")
 def api_auth_status():
-    return jsonify({"password_set": has_password()})
+    db = current_db()
+    token = request.headers.get("X-Auth-Token") or ""
+    user = authenticated_user_from_token(db, token)
+    return jsonify(
+        {
+            "has_users": has_users(db),
+            "authenticated": user is not None,
+            "user": user_public_payload(user),
+        }
+    )
 
 
 @app.route("/api/auth/set", methods=["POST"])
 def api_auth_set():
-    global PASSWORD_RECORD, LEGACY_PASSWORD_HASH, STATE_SECRET
-    if has_password():
-        return jsonify({"error": "already_set"}), 400
+    # Backward-compatible alias for the old first-run password endpoint.
+    return api_auth_register()
+
+
+@app.route("/api/auth/register", methods=["POST"])
+def api_auth_register():
+    db = current_db()
     data = request.get_json() or {}
+    email = database.normalize_email(data.get("email") or "demo@example.local")
     password = (data.get("password") or "").strip()
+    if not email or "@" not in email:
+        return jsonify({"error": "invalid_email"}), 400
     if len(password) < 4:
         return jsonify({"error": "too_short"}), 400
-    PASSWORD_RECORD = auth_service.create_password_record(password)
-    storage.save_password_record(PASSWORD_RECORD)
-    LEGACY_PASSWORD_HASH = ""
-    STATE_SECRET = auth_service.record_secret(PASSWORD_RECORD) or ""
-    save_runtime_state()
-    token = issue_session_token()
-    return jsonify({"token": token})
+    user = database.UserModel(email=email, password_record=auth_service.create_password_record(password))
+    db.add(user)
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        return jsonify({"error": "email_exists"}), 409
+    token = issue_session_token(db, user.id)
+    db.commit()
+    return jsonify({"token": token, "user": user_public_payload(user)})
 
 
 @app.route("/api/auth/login", methods=["POST"])
 def api_auth_login():
-    global STATE_SECRET
+    db = current_db()
     data = request.get_json() or {}
+    email = database.normalize_email(data.get("email") or "")
     password = (data.get("password") or "").strip()
-    if not has_password():
-        return jsonify({"error": "not_set"}), 400
-    if not verify_current_password(password):
-        return jsonify({"error": "invalid"}), 401
-    if PASSWORD_RECORD:
-        STATE_SECRET = auth_service.record_secret(PASSWORD_RECORD) or ""
+    user = None
+    if email:
+        user = db.scalar(select(database.UserModel).where(database.UserModel.email == email))
     else:
-        STATE_SECRET = LEGACY_PASSWORD_HASH
-    token = issue_session_token()
-    return jsonify({"token": token})
+        user = db.scalar(select(database.UserModel).order_by(database.UserModel.id.asc()).limit(1))
+    if not user:
+        return jsonify({"error": "not_found"}), 404
+    if not verify_user_password(user, password):
+        return jsonify({"error": "invalid"}), 401
+    token = issue_session_token(db, user.id)
+    db.commit()
+    return jsonify({"token": token, "user": user_public_payload(user)})
 
 
 @app.route("/api/auth/logout", methods=["POST"])
 def api_auth_logout():
+    db = current_db()
     token = request.headers.get("X-Auth-Token") or ""
-    if token:
-        AUTH_SESSIONS.pop(token, None)
+    database.revoke_token(db, token)
+    db.commit()
     return jsonify({"status": "ok"})
 
 
 @app.route("/api/auth/change", methods=["POST"])
 def api_auth_change_password():
-    global PASSWORD_RECORD, LEGACY_PASSWORD_HASH, STATE_SECRET
+    db = current_db()
     token = request.headers.get("X-Auth-Token") or ""
-    if not is_session_valid(token):
+    user = authenticated_user_from_token(db, token)
+    if not user:
         return jsonify({"error": "unauthorized"}), 401
 
     data = request.get_json() or {}
@@ -398,21 +488,20 @@ def api_auth_change_password():
     new_password = (data.get("new_password") or "").strip()
     if len(new_password) < 4:
         return jsonify({"error": "too_short"}), 400
-    if not verify_current_password(current_password):
+    if not verify_user_password(user, current_password):
         return jsonify({"error": "invalid_current_password"}), 401
 
-    PASSWORD_RECORD = auth_service.create_password_record(new_password)
-    storage.save_password_record(PASSWORD_RECORD)
-    LEGACY_PASSWORD_HASH = ""
-    STATE_SECRET = auth_service.record_secret(PASSWORD_RECORD) or ""
-    AUTH_SESSIONS.clear()
-    save_runtime_state()
-    new_token = issue_session_token()
-    return jsonify({"status": "ok", "token": new_token})
+    user.password_record = auth_service.create_password_record(new_password)
+    db.query(database.SessionModel).filter(database.SessionModel.user_id == user.id).delete(synchronize_session=False)
+    new_token = issue_session_token(db, user.id)
+    db.commit()
+    return jsonify({"status": "ok", "token": new_token, "user": user_public_payload(user)})
 
 
 @app.route("/api/import", methods=["POST"])
 def api_import():
+    db = current_db()
+    user_id = current_user_id()
     uploaded = request.files.get("file")
     bank = (request.form.get("bank") or "").lower()
     if not uploaded or bank not in IMPORT_FORMATS:
@@ -442,7 +531,7 @@ def api_import():
     file_id = ""
     try:
         content_hash = file_sha256(tmp_path)
-        duplicate_file = next((item for item in uploaded_files if item.get("content_hash") == content_hash), None)
+        duplicate_file = database.find_duplicate_file(db, user_id, content_hash)
         if duplicate_file:
             return (
                 jsonify(
@@ -450,9 +539,9 @@ def api_import():
                         "error": "duplicate_file",
                         "message": "Этот файл уже был загружен. Повторный импорт отменён.",
                         "duplicate_file": {
-                            "id": duplicate_file.get("id"),
-                            "name": duplicate_file.get("name"),
-                            "bank": duplicate_file.get("bank"),
+                            "id": duplicate_file.id,
+                            "name": duplicate_file.name,
+                            "bank": duplicate_file.bank,
                         },
                     }
                 ),
@@ -495,7 +584,7 @@ def api_import():
                 jsonify(
                     {
                         "error": "duplicate_operations",
-                        "message": "В этом файле не найдено новых операций. Все операции уже есть в хранилище.",
+                        "message": "Файл не добавлен как новый: все операции из него уже есть в хранилище.",
                         "import_report": import_report,
                     }
                 ),
@@ -517,33 +606,59 @@ def api_import():
         if tmp_path:
             os.remove(tmp_path)
 
-    uploaded_files.append(
-        {
-            "id": file_id,
-            "name": uploaded.filename,
-            "bank": bank,
-            "count": count,
-            "content_hash": content_hash,
-        }
-    )
-    save_runtime_state()
+    try:
+        new_operations = unique_operations_for_storage(
+            [op for op in vault.operations if op.source_file_id == file_id],
+            import_report,
+        )
+        count = len(new_operations)
+        if count == 0:
+            cleanup_failed_import(file_id)
+            return (
+                jsonify(
+                    {
+                        "error": "duplicate_operations",
+                        "message": "Файл не добавлен как новый: все операции из него уже есть в хранилище.",
+                        "import_report": import_report,
+                    }
+                ),
+                409,
+            )
+        database.upsert_accounts(db, user_id, vault.accounts.values())
+        database.insert_operations(db, user_id, new_operations)
+        database.add_uploaded_file(db, user_id, file_id, uploaded.filename or "", bank, count, content_hash)
+        db.commit()
+        load_user_runtime(db, user_id)
+    except IntegrityError:
+        db.rollback()
+        cleanup_failed_import(file_id)
+        return (
+            jsonify(
+                {
+                    "error": "duplicate_operations",
+                    "message": "Файл не добавлен как новый: все операции из него уже есть в хранилище.",
+                    "import_report": import_report,
+                }
+            ),
+            409,
+        )
     return jsonify({"imported": count, "totals": analytics_service.compute_totals(vault), "import_report": import_report})
 
 
 @app.route("/api/reset", methods=["POST"])
 def api_reset():
-    vault.reset()
-    uploaded_files.clear()
-    corrections_log.clear()
-    pipeline.replace_custom_mappings([])
-    rebuild_pipeline_counters()
-    save_runtime_state()
+    db = current_db()
+    database.clear_user_data(db, current_user_id())
+    db.commit()
+    load_user_runtime(db, current_user_id())
     return jsonify({"status": "ok"})
 
 
 @app.route("/api/profile", methods=["GET", "PUT"])
 def api_profile():
     global user_profile, user_profile_exists
+    db = current_db()
+    user_id = current_user_id()
     if request.method == "GET":
         return jsonify({"profile": user_profile, "exists": user_profile_exists})
 
@@ -551,7 +666,8 @@ def api_profile():
     raw_profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else payload
     user_profile = storage.normalize_profile(raw_profile)
     user_profile_exists = True
-    save_runtime_state()
+    database.save_profile(db, user_id, user_profile)
+    db.commit()
     return jsonify({"status": "ok", "profile": user_profile})
 
 
@@ -632,6 +748,8 @@ def api_unknown():
 
 @app.route("/api/operations/<operation_id>/category", methods=["POST"])
 def api_set_operation_category(operation_id: str):
+    db = current_db()
+    user_id = current_user_id()
     payload = request.get_json(force=True) or {}
     category_id = (payload.get("category_id") or "").strip()
     reason = (payload.get("reason") or "").strip()
@@ -641,8 +759,10 @@ def api_set_operation_category(operation_id: str):
     if not change:
         return jsonify({"error": "operation_not_found"}), 404
     corrections_log.append(change)
-    save_runtime_state()
     operation = corrections_service.find_operation(vault, operation_id)
+    database.update_operations(db, user_id, [operation])
+    database.add_correction(db, user_id, change)
+    db.commit()
     return jsonify({"status": "ok", "change": change, "operation": serialize_operation(operation)})
 
 
@@ -654,15 +774,23 @@ def api_corrections():
 
 @app.route("/api/corrections/undo", methods=["POST"])
 def api_corrections_undo():
+    db = current_db()
+    user_id = current_user_id()
     reverted = corrections_service.undo_last_change(vault, corrections_log)
     if not reverted:
         return jsonify({"error": "nothing_to_undo"}), 400
-    save_runtime_state()
+    operation = corrections_service.find_operation(vault, reverted.get("operation_id") or "")
+    if operation:
+        database.update_operations(db, user_id, [operation])
+    database.replace_corrections(db, user_id, corrections_log)
+    db.commit()
     return jsonify({"status": "ok", "reverted": reverted})
 
 
 @app.route("/api/mappings/custom", methods=["GET", "POST"])
 def api_custom_mappings():
+    db = current_db()
+    user_id = current_user_id()
     if request.method == "GET":
         return jsonify({"items": pipeline.list_custom_mappings(), "count": len(pipeline.list_custom_mappings())})
 
@@ -678,14 +806,19 @@ def api_custom_mappings():
     mapping = pipeline.set_custom_mapping(bank, bank_category, base_id)
     reclassified = reclassify_unknown(vault, pipeline)
     rebuild_pipeline_counters()
-    save_runtime_state()
+    database.upsert_custom_mapping(db, user_id, mapping)
+    database.update_operations(db, user_id, vault.operations)
+    db.commit()
     return jsonify({"status": "ok", "mapping": mapping, "reclassified": reclassified})
 
 
 @app.route("/api/reclassify-unknown", methods=["POST"])
 def api_reclassify_unknown():
+    db = current_db()
+    user_id = current_user_id()
     updated = reclassify_unknown(vault, pipeline)
-    save_runtime_state()
+    database.update_operations(db, user_id, vault.operations)
+    db.commit()
     return jsonify({"status": "ok", "updated": updated})
 
 
@@ -758,11 +891,14 @@ def api_export():
 
 @app.route("/api/train-ml", methods=["POST"])
 def api_train_ml():
+    db = current_db()
+    user_id = current_user_id()
     status = ml_model.fit(vault.operations)
     reclassified = 0
     if status.trained:
         reclassified = reclassify_unknown(vault, pipeline)
-        save_runtime_state()
+        database.update_operations(db, user_id, vault.operations)
+        db.commit()
     return jsonify(
         {
             "trained": status.trained,
@@ -819,16 +955,14 @@ def api_list_files():
 @app.route("/api/files/<file_id>", methods=["DELETE"])
 def api_delete_file(file_id: str):
     global uploaded_files, corrections_log
+    db = current_db()
+    user_id = current_user_id()
     removed = [f for f in uploaded_files if f["id"] == file_id]
     if not removed:
         return jsonify({"error": "not found"}), 404
-    deleted_operation_ids = {op.id for op in vault.operations if op.source_file_id == file_id}
-    uploaded_files = [f for f in uploaded_files if f["id"] != file_id]
-    vault.operations = [op for op in vault.operations if op.source_file_id != file_id]
-    if deleted_operation_ids:
-        corrections_log = [item for item in corrections_log if item.get("operation_id") not in deleted_operation_ids]
-    rebuild_pipeline_counters()
-    save_runtime_state()
+    deleted_operation_ids = database.delete_file_with_operations(db, user_id, file_id)
+    db.commit()
+    load_user_runtime(db, user_id)
     return jsonify(
         {
             "status": "deleted",
@@ -842,7 +976,7 @@ def api_delete_file(file_id: str):
 @app.route("/api/save", methods=["POST"])
 def api_save():
     save_runtime_state()
-    return jsonify({"status": "saved"})
+    return jsonify({"status": "saved", "storage": "database"})
 
 
 @app.route("/api/save-model", methods=["POST"])

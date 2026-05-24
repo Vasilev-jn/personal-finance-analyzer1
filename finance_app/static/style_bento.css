@@ -516,6 +516,28 @@ a {
   margin-top: 10px;
 }
 
+.uploaded-files-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.uploaded-files-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.upload-file-list {
+  display: grid;
+  gap: 8px;
+  max-height: 178px;
+  overflow: auto;
+}
+
 .summary-list li,
 .file-item,
 .pill-list li,
@@ -541,6 +563,12 @@ a {
 .qa-amount {
   color: var(--primary);
   font-weight: 800;
+}
+
+.empty-file-item {
+  justify-content: flex-start;
+  color: var(--muted);
+  font-weight: 700;
 }
 
 .summary-list .summary-row {

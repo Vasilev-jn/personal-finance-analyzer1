@@ -653,10 +653,10 @@ async function ensureBaseCategoriesLoaded() {
 function handleUnauthorized() {
   authToken = "";
   localStorage.removeItem("auth_token");
-  showAuthLoginScreen("Сессия истекла. Введите пароль заново");
+  showAuthLoginScreen("Сессия истекла. Войдите заново");
 }
 
-function showAuthLoginScreen(subtitleText = "Введите пароль, чтобы открыть данные") {
+function showAuthLoginScreen(subtitleText = "Введите email и пароль, чтобы открыть данные") {
   const screen = document.getElementById("auth-screen");
   const loginForm = document.getElementById("auth-login-form");
   const createForm = document.getElementById("auth-create-form");
@@ -669,7 +669,7 @@ function showAuthLoginScreen(subtitleText = "Введите пароль, что
   if (subtitle) subtitle.textContent = subtitleText;
 }
 
-function showAuthCreateScreen() {
+function showAuthCreateScreen(subtitleText = "Создайте аккаунт, чтобы начать работу") {
   const screen = document.getElementById("auth-screen");
   const loginForm = document.getElementById("auth-login-form");
   const createForm = document.getElementById("auth-create-form");
@@ -678,8 +678,8 @@ function showAuthCreateScreen() {
   if (screen) screen.style.display = "flex";
   if (loginForm) loginForm.classList.add("hidden");
   if (createForm) createForm.classList.remove("hidden");
-  if (title) title.textContent = "Создание пароля";
-  if (subtitle) subtitle.textContent = "Задайте пароль, чтобы защитить доступ";
+  if (title) title.textContent = "Регистрация";
+  if (subtitle) subtitle.textContent = subtitleText;
 }
 
 function hideAuthScreen() {
@@ -698,13 +698,15 @@ function resumeAuthenticatedApp() {
 
 async function validateStoredSession() {
   if (!authToken) return false;
-  const res = await apiFetch("/api/profile");
+  const res = await apiFetch("/api/auth/status");
   if (res.status === 401) {
     authToken = "";
     localStorage.removeItem("auth_token");
     return false;
   }
-  return res.ok;
+  if (!res.ok) return false;
+  const data = await res.json().catch(() => ({}));
+  return data.authenticated === true;
 }
 
 function setupAuth() {
@@ -713,6 +715,8 @@ function setupAuth() {
   const createForm = document.getElementById("auth-create-form");
   const loginError = document.getElementById("auth-error");
   const createError = document.getElementById("auth-create-error");
+  const showRegisterBtn = document.getElementById("auth-show-register");
+  const showLoginBtn = document.getElementById("auth-show-login");
 
   // показать форму сразу, чтобы не оставлять пустой экран даже если статус не загрузился
   showAuthLoginScreen();
@@ -720,11 +724,12 @@ function setupAuth() {
   fetch("/api/auth/status")
     .then((r) => r.json())
     .then(async (data) => {
-      if (data.password_set) {
+      if (authToken && data.authenticated) {
+        resumeAuthenticatedApp();
+      } else if (authToken && (await validateStoredSession())) {
+        resumeAuthenticatedApp();
+      } else if (data.has_users) {
         showAuthLoginScreen();
-        if (authToken && (await validateStoredSession())) {
-          resumeAuthenticatedApp();
-        }
       } else {
         showAuthCreateScreen();
       }
@@ -736,15 +741,16 @@ function setupAuth() {
   loginForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     loginError.hidden = true;
+    const email = document.getElementById("auth-email").value.trim();
     const password = document.getElementById("auth-password").value;
     const res = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ email, password }),
     });
     const data = await res.json();
     if (!res.ok) {
-      loginError.textContent = "Неверный пароль";
+      loginError.textContent = data.error === "not_found" ? "Пользователь не найден" : "Неверный email или пароль";
       loginError.hidden = false;
       return;
     }
@@ -756,21 +762,39 @@ function setupAuth() {
   createForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     createError.hidden = true;
+    const email = document.getElementById("auth-new-email").value.trim();
     const password = document.getElementById("auth-new-password").value;
-    const res = await fetch("/api/auth/set", {
+    const res = await fetch("/api/auth/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ email, password }),
     });
     const data = await res.json();
     if (!res.ok) {
-      createError.textContent = "Не удалось сохранить пароль";
+      if (data.error === "email_exists") {
+        createError.textContent = "Пользователь с таким email уже существует";
+      } else if (data.error === "invalid_email") {
+        createError.textContent = "Введите корректный email";
+      } else if (data.error === "too_short") {
+        createError.textContent = "Пароль должен быть не короче 4 символов";
+      } else {
+        createError.textContent = "Не удалось создать аккаунт";
+      }
       createError.hidden = false;
       return;
     }
     authToken = data.token;
     localStorage.setItem("auth_token", authToken);
     resumeAuthenticatedApp();
+  });
+
+  showRegisterBtn?.addEventListener("click", () => {
+    loginError.hidden = true;
+    showAuthCreateScreen();
+  });
+  showLoginBtn?.addEventListener("click", () => {
+    createError.hidden = true;
+    showAuthLoginScreen();
   });
 }
 
@@ -811,6 +835,7 @@ function startApp() {
       const message = err.message || "Не удалось импортировать файл";
       showUploadError(message);
       showToast(message);
+      renderFiles().catch(() => {});
     }
   });
 
@@ -1942,6 +1967,12 @@ async function renderFiles() {
     select.innerHTML = `<option value="">Нет файлов</option>`;
   }
   if (!data.files.length) {
+    if (list) {
+      const li = document.createElement("li");
+      li.className = "file-item empty-file-item";
+      li.textContent = "Загруженных выписок пока нет";
+      list.appendChild(li);
+    }
     syncCustomSelect(select);
     return;
   }
@@ -2670,7 +2701,7 @@ async function revokeCurrentSession() {
   }
 }
 
-function lockApp(subtitle = "Введите пароль, чтобы открыть данные") {
+function lockApp(subtitle = "Введите email и пароль, чтобы открыть данные") {
   authToken = "";
   localStorage.removeItem("auth_token");
   const passwordInput = document.getElementById("auth-password");

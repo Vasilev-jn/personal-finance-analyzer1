@@ -14,7 +14,7 @@
       document.documentElement.dataset.theme = savedTheme;
     })();
   </script>
-  <link rel="stylesheet" href="/static/style_bento.css?v=14">
+  <link rel="stylesheet" href="/static/style_bento.css?v=16">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
@@ -27,6 +27,19 @@
       <h2 id="auth-title">Вход</h2>
       <p id="auth-subtitle" class="hint"></p>
       <form id="auth-login-form" class="auth-form hidden" autocomplete="off">
+        <label class="field">
+          <span>Email</span>
+          <input
+            type="email"
+            id="auth-email"
+            name="auth-email"
+            autocomplete="email"
+            autocorrect="off"
+            autocapitalize="none"
+            spellcheck="false"
+            required
+          >
+        </label>
         <label class="field">
           <span>Пароль</span>
           <input
@@ -42,9 +55,23 @@
           >
         </label>
         <button type="submit" class="btn primary full">Войти</button>
+        <button id="auth-show-register" type="button" class="btn ghost full">Создать аккаунт</button>
         <p id="auth-error" class="hint error" hidden></p>
       </form>
       <form id="auth-create-form" class="auth-form hidden" autocomplete="off">
+        <label class="field">
+          <span>Email</span>
+          <input
+            type="email"
+            id="auth-new-email"
+            name="auth-new-email"
+            autocomplete="email"
+            autocorrect="off"
+            autocapitalize="none"
+            spellcheck="false"
+            required
+          >
+        </label>
         <label class="field">
           <span>Придумайте пароль</span>
           <input
@@ -59,7 +86,8 @@
             required
           >
         </label>
-        <button type="submit" class="btn primary full">Создать пароль</button>
+        <button type="submit" class="btn primary full">Зарегистрироваться</button>
+        <button id="auth-show-login" type="button" class="btn ghost full">Уже есть аккаунт</button>
         <p id="auth-create-error" class="hint error" hidden></p>
       </form>
     </div>
@@ -170,6 +198,13 @@
               <div id="upload-error" class="upload-error" role="alert" hidden></div>
               <button type="submit" class="btn primary">Импортировать</button>
             </form>
+            <div class="uploaded-files-panel">
+              <div class="uploaded-files-header">
+                <strong>Загруженные выписки</strong>
+                <span class="hint">Текущий аккаунт</span>
+              </div>
+              <ul id="file-list" class="file-list upload-file-list"></ul>
+            </div>
             <div id="toast" class="toast" hidden></div>
           </div>
 
@@ -1006,6 +1041,6 @@
     </div>
   </div>
 
-  <script src="/static/app_bento.js?v=14"></script>
+  <script src="/static/app_bento.js?v=16"></script>
 </body>
 </html>
