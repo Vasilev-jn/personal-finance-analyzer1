@@ -461,6 +461,8 @@ def api_auth_login():
         return jsonify({"error": "not_found"}), 404
     if not verify_user_password(user, password):
         return jsonify({"error": "invalid"}), 401
+    if auth_service.password_needs_rehash(user.password_record):
+        user.password_record = auth_service.create_password_record(password)
     token = issue_session_token(db, user.id)
     db.commit()
     return jsonify({"token": token, "user": user_public_payload(user)})

@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 
 import app as app_module
 from finance_app.domain import Account, Vault
-from finance_app.services import storage
+from finance_app.services import auth_service, storage
 
 
 class AuthenticatedClient:
@@ -200,6 +200,28 @@ def test_auth_logout_and_change_password(client):
     logout = client.raw.post("/api/auth/logout", headers={"X-Auth-Token": new_token})
     assert logout.status_code == 200
     assert client.raw.get("/api/files", headers={"X-Auth-Token": new_token}).status_code == 401
+
+
+def test_login_migrates_legacy_pbkdf2_password_to_argon2id(client):
+    with app_module.database.SessionLocal() as db:
+        user = app_module.database.UserModel(
+            email="legacy@example.com",
+            password_record=auth_service.create_pbkdf2_password_record("legacy-pass"),
+        )
+        db.add(user)
+        db.commit()
+        user_id = user.id
+
+    resp = client.raw.post(
+        "/api/auth/login",
+        json={"email": "legacy@example.com", "password": "legacy-pass"},
+    )
+
+    assert resp.status_code == 200
+    with app_module.database.SessionLocal() as db:
+        migrated = db.get(app_module.database.UserModel, user_id)
+        assert migrated.password_record["algo"] == "argon2id"
+        assert migrated.password_record["hash"].startswith("$argon2id$")
 
 
 def test_users_do_not_see_each_other_operations_or_profile(client, make_operation):

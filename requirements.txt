@@ -1,6 +1,7 @@
 flask==3.0.3
 SQLAlchemy==2.0.36
 psycopg[binary]==3.2.3
+argon2-cffi==23.1.0
 scikit-learn==1.5.2
 joblib==1.5.3
 requests==2.32.3
